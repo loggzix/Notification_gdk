@@ -26,7 +26,10 @@ public class PackageListerWindow : EditorWindow
     private Dictionary<string, bool> installingPackages = new Dictionary<string, bool>();
     private Dictionary<string, bool> installedPackages = new Dictionary<string, bool>();
     private Dictionary<string, string> installedVersions = new Dictionary<string, string>();
-    private Dictionary<string, bool> installedAsDependencies = new Dictionary<string, bool>(); // True nếu cài bởi dependency
+
+    private Dictionary<string, bool>
+        installedAsDependencies = new Dictionary<string, bool>(); // True nếu cài bởi dependency
+
     private ListRequest listRequest;
     private string selectedPackageName = "";
     private int selectedTab = 0; // 0 = All Packages, 1 = Installed
@@ -59,7 +62,7 @@ public class PackageListerWindow : EditorWindow
     {
         // Đọc trực tiếp từ manifest.json để kiểm tra packages đã cài
         LoadInstalledPackagesFromManifest();
-        
+
         // Vẫn giữ việc sử dụng Client.List() để cập nhật thông tin chính xác
         listRequest = Client.List();
         CheckListProgressWrapper();
@@ -70,7 +73,7 @@ public class PackageListerWindow : EditorWindow
         installedPackages.Clear();
         installedVersions.Clear();
         installedAsDependencies.Clear();
-        
+
         try
         {
             // 1. Đọc manifest.json để lấy packages cài trực tiếp
@@ -78,22 +81,22 @@ public class PackageListerWindow : EditorWindow
             if (System.IO.File.Exists(manifestPath))
             {
                 string jsonText = System.IO.File.ReadAllText(manifestPath);
-                
+
                 // Parse JSON thủ công để lấy dependencies
                 int dependenciesStart = jsonText.IndexOf("\"dependencies\"");
                 if (dependenciesStart != -1)
                 {
                     int braceStart = jsonText.IndexOf('{', dependenciesStart);
                     int braceEnd = FindMatchingBrace(jsonText, braceStart);
-                    
+
                     if (braceEnd != -1)
                     {
                         string dependenciesBlock = jsonText.Substring(braceStart + 1, braceEnd - braceStart - 1);
-                        
+
                         // Parse từng dòng dependency
                         string[] lines = dependenciesBlock.Split(new[] { '\n', '\r' },
                             System.StringSplitOptions.RemoveEmptyEntries);
-                        
+
                         foreach (string line in lines)
                         {
                             string trimmedLine = line.Trim();
@@ -105,49 +108,49 @@ public class PackageListerWindow : EditorWindow
                                 int secondQuote = trimmedLine.IndexOf('"', firstQuote + 1);
                                 int thirdQuote = trimmedLine.IndexOf('"', secondQuote + 1);
                                 int fourthQuote = trimmedLine.IndexOf('"', thirdQuote + 1);
-                                
+
                                 if (firstQuote != -1 && secondQuote != -1 && thirdQuote != -1 && fourthQuote != -1)
                                 {
                                     string packageName =
                                         trimmedLine.Substring(firstQuote + 1, secondQuote - firstQuote - 1);
                                     string version =
                                         trimmedLine.Substring(thirdQuote + 1, fourthQuote - thirdQuote - 1);
-                                    
+
                                     installedPackages[packageName] = true;
                                     installedAsDependencies[packageName] = false; // Cài trực tiếp
-                                    
+
                                     // Chỉ lưu version nếu không phải URL
                                     if (!version.StartsWith("http") && !version.StartsWith("git"))
                                     {
                                         installedVersions[packageName] = version;
-                                    }
                                     }
                                 }
                             }
                         }
                     }
                 }
-                
+            }
+
             // 2. Đọc packages-lock.json để lấy tất cả packages (bao gồm dependencies)
             string lockPath = "Packages/packages-lock.json";
             if (System.IO.File.Exists(lockPath))
             {
                 string lockJsonText = System.IO.File.ReadAllText(lockPath);
-                
+
                 // Parse packages-lock.json để tìm packages với depth > 0 và url = dmobin registry
                 int dependenciesStart = lockJsonText.IndexOf("\"dependencies\"");
                 if (dependenciesStart != -1)
                 {
                     int braceStart = lockJsonText.IndexOf('{', dependenciesStart);
                     int braceEnd = FindMatchingBrace(lockJsonText, braceStart);
-                    
+
                     if (braceEnd != -1)
                     {
                         string dependenciesBlock = lockJsonText.Substring(braceStart + 1, braceEnd - braceStart - 1);
-                        
+
                         // Tách từng package block
                         string[] packageBlocks = SplitPackageBlocks(dependenciesBlock);
-                        
+
                         foreach (string block in packageBlocks)
                         {
                             if (block.Contains("\"com.dmobin") && block.Contains("upm.dmobin.studio"))
@@ -158,7 +161,7 @@ public class PackageListerWindow : EditorWindow
                                 if (nameStart != -1 && nameEnd != -1)
                                 {
                                     string packageName = block.Substring(nameStart + 1, nameEnd - nameStart - 1);
-                                    
+
                                     // Kiểm tra depth
                                     int depthIndex = block.IndexOf("\"depth\":");
                                     bool isDependency = false;
@@ -170,13 +173,13 @@ public class PackageListerWindow : EditorWindow
                                         {
                                             depthStr = depthStr.Substring(0, commaIndex).Trim();
                                         }
-                                        
+
                                         if (int.TryParse(depthStr, out int depth) && depth > 0)
                                         {
                                             isDependency = true;
                                         }
                                     }
-                                    
+
                                     // Lấy version
                                     int versionIndex = block.IndexOf("\"version\":");
                                     if (versionIndex != -1)
@@ -186,8 +189,9 @@ public class PackageListerWindow : EditorWindow
                                         if (versionStart > 0 && versionEnd > versionStart)
                                         {
                                             string version = block.Substring(versionStart, versionEnd - versionStart);
-                                            
-                                            if (!version.StartsWith("http") && !version.StartsWith("git") && !version.StartsWith("file:"))
+
+                                            if (!version.StartsWith("http") && !version.StartsWith("git") &&
+                                                !version.StartsWith("file:"))
                                             {
                                                 // Thêm vào installed nếu chưa có (từ manifest)
                                                 if (!installedPackages.ContainsKey(packageName))
@@ -208,7 +212,8 @@ public class PackageListerWindow : EditorWindow
 
             int directCount = installedAsDependencies.Count(kvp => kvp.Value == false);
             int depCount = installedAsDependencies.Count(kvp => kvp.Value == true);
-            Debug.Log($"✅ Đã load {installedPackages.Count} packages ({directCount} trực tiếp, {depCount} dependencies)");
+            Debug.Log(
+                $"✅ Đã load {installedPackages.Count} packages ({directCount} trực tiếp, {depCount} dependencies)");
             Repaint();
         }
         catch (System.Exception e)
@@ -216,14 +221,14 @@ public class PackageListerWindow : EditorWindow
             Debug.LogWarning($"⚠️ Không thể đọc manifest/packages-lock: {e.Message}");
         }
     }
-    
+
     private string[] SplitPackageBlocks(string dependenciesBlock)
     {
         List<string> blocks = new List<string>();
         int currentPos = 0;
         int braceLevel = 0;
         int blockStart = 0;
-        
+
         for (int i = 0; i < dependenciesBlock.Length; i++)
         {
             if (dependenciesBlock[i] == '{')
@@ -232,6 +237,7 @@ public class PackageListerWindow : EditorWindow
                 {
                     blockStart = i;
                 }
+
                 braceLevel++;
             }
             else if (dependenciesBlock[i] == '}')
@@ -245,12 +251,13 @@ public class PackageListerWindow : EditorWindow
                     {
                         nameEnd--;
                     }
+
                     int nameStart = nameEnd - 1;
                     while (nameStart > 0 && dependenciesBlock[nameStart] != '"')
                     {
                         nameStart--;
                     }
-                    
+
                     if (nameStart > 0)
                     {
                         string packageName = dependenciesBlock.Substring(nameStart, nameEnd - nameStart + 1);
@@ -260,7 +267,7 @@ public class PackageListerWindow : EditorWindow
                 }
             }
         }
-        
+
         return blocks.ToArray();
     }
 
@@ -740,7 +747,7 @@ public class PackageListerWindow : EditorWindow
         if (selectedKeywords.Count > 0)
         {
             result = result.Where(p => p.keywords != null &&
-                selectedKeywords.Any(selectedKeyword => p.keywords.Contains(selectedKeyword)));
+                                       selectedKeywords.Any(selectedKeyword => p.keywords.Contains(selectedKeyword)));
         }
 
         // Lọc theo nhiều authors nếu có
@@ -871,7 +878,8 @@ public class PackageListerWindow : EditorWindow
                 : package.version;
 
             // Kiểm tra xem package có được cài bởi dependency không
-            bool isDependency = installedAsDependencies.ContainsKey(package.name) && installedAsDependencies[package.name];
+            bool isDependency = installedAsDependencies.ContainsKey(package.name) &&
+                                installedAsDependencies[package.name];
             string icon = isDependency ? "🔗" : "✅";
             string statusText = $"{icon} v{displayVersion}";
 
@@ -908,9 +916,10 @@ public class PackageListerWindow : EditorWindow
             string displayVersion = !string.IsNullOrEmpty(installedVersion) ? installedVersion : package.version;
 
             // Kiểm tra xem package có được cài bởi dependency không
-            bool isDependency = installedAsDependencies.ContainsKey(package.name) && installedAsDependencies[package.name];
+            bool isDependency = installedAsDependencies.ContainsKey(package.name) &&
+                                installedAsDependencies[package.name];
             string icon = isDependency ? "🔗" : "✅";
-            
+
             GUILayout.Label($"{icon} v{displayVersion}", installedStyle);
         }
         else
@@ -985,17 +994,20 @@ public class PackageListerWindow : EditorWindow
                 GUI.enabled = !isInstalling && !isInstalled;
 
                 // Kiểm tra xem package có được cài bởi dependency không
-                bool isDependency = installedAsDependencies.ContainsKey(package.name) && installedAsDependencies[package.name];
+                bool isDependency = installedAsDependencies.ContainsKey(package.name) &&
+                                    installedAsDependencies[package.name];
                 string installedIcon = isDependency ? "🔗" : "✅";
-                string buttonText = isInstalled ? $"{installedIcon} Installed" : (isInstalling ? "⏳ Installing..." : "📦 Install");
-                
+                string buttonText = isInstalled
+                    ? $"{installedIcon} Installed"
+                    : (isInstalling ? "⏳ Installing..." : "📦 Install");
+
                 if (GUILayout.Button(new GUIContent(buttonText, $"Cài đặt package {package.name}"),
                         GUILayout.Width(120)))
-            {
-                InstallPackage(package.name, package.version);
-            }
+                {
+                    InstallPackage(package.name, package.version);
+                }
 
-            GUI.enabled = true;
+                GUI.enabled = true;
             }
         }
         else
@@ -1065,10 +1077,11 @@ public class PackageListerWindow : EditorWindow
     private void ShowMainContextMenu()
     {
         GenericMenu menu = new GenericMenu();
-        
-        menu.AddItem(new GUIContent("Scoped Registries Initialization"), false, () => { ScopedRegistriesInitialization();});
+
+        menu.AddItem(new GUIContent("Scoped Registries Initialization"), false,
+            () => { ScopedRegistriesInitialization(); });
         menu.AddItem(new GUIContent("Check Define Symbol"), false, () => { CheckDefineSymbols(); });
-        
+
         // Show menu at mouse position
         menu.ShowAsContext();
     }
@@ -1120,6 +1133,33 @@ public class PackageListerWindow : EditorWindow
     }
 
     /// <summary>
+    /// Kiểm tra xem Dmobin UPM Scoped Registry đã được khởi tạo chưa
+    /// </summary>
+    /// <returns>True nếu registry đã tồn tại, False nếu chưa</returns>
+    private bool IsScopedRegistryInitialized()
+    {
+        try
+        {
+            string manifestPath = "Packages/manifest.json";
+
+            if (!System.IO.File.Exists(manifestPath))
+            {
+                return false;
+            }
+
+            string jsonText = System.IO.File.ReadAllText(manifestPath);
+
+            // Kiểm tra xem có "name": "Dmobin UPM" trong manifest không
+            return jsonText.Contains("\"name\": \"Dmobin UPM\"");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"⚠️ Không thể kiểm tra Scoped Registry: {e.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Khởi tạo Dmobin UPM Scoped Registry
     /// </summary>
     private void ScopedRegistriesInitialization()
@@ -1128,22 +1168,8 @@ public class PackageListerWindow : EditorWindow
 
         try
         {
-            // Đường dẫn đến manifest.json
-            string manifestPath = "Packages/manifest.json";
-
-            // Kiểm tra file có tồn tại không
-            if (!System.IO.File.Exists(manifestPath))
-            {
-                Debug.LogError("❌ Không tìm thấy manifest.json");
-                return;
-            }
-
-            // Đọc nội dung manifest.json
-            string jsonText = System.IO.File.ReadAllText(manifestPath);
-            Debug.Log("📖 Đã đọc manifest.json thành công");
-
-            // Parse JSON đơn giản để kiểm tra registry đã tồn tại chưa
-            if (jsonText.Contains("\"name\": \"Dmobin UPM\""))
+            // Kiểm tra registry đã tồn tại chưa
+            if (IsScopedRegistryInitialized())
             {
                 Debug.Log("✅ Dmobin UPM registry đã tồn tại");
                 EditorUtility.DisplayDialog("Thông báo",
@@ -1151,6 +1177,21 @@ public class PackageListerWindow : EditorWindow
                     "OK");
                 return;
             }
+
+            // Đường dẫn đến manifest.json
+            string manifestPath = "Packages/manifest.json";
+
+            // Kiểm tra file có tồn tại không
+            if (!System.IO.File.Exists(manifestPath))
+            {
+                Debug.LogError("❌ Không tìm thấy manifest.json");
+                EditorUtility.DisplayDialog("Lỗi", "Không tìm thấy file manifest.json trong thư mục Packages.", "OK");
+                return;
+            }
+
+            // Đọc và xử lý manifest.json
+            string jsonText = System.IO.File.ReadAllText(manifestPath);
+            Debug.Log("📖 Đã đọc manifest.json thành công");
 
             // Tạo scoped registry JSON
             string dmobinRegistry = @"    {
@@ -1163,24 +1204,42 @@ public class PackageListerWindow : EditorWindow
       ]
     }";
 
-            // Kiểm tra xem có scopedRegistries chưa
-            if (jsonText.Contains("\"scopedRegistries\""))
-            {
-                // Tìm vị trí của scopedRegistries array
-                int scopedStart = jsonText.IndexOf("\"scopedRegistries\"");
-                int arrayStart = jsonText.IndexOf("[", scopedStart);
+            // Xử lý scopedRegistries
+            int scopedRegistriesIndex = jsonText.IndexOf("\"scopedRegistries\"");
 
-                if (arrayStart != -1)
+            if (scopedRegistriesIndex != -1)
+            {
+                // Tìm vị trí của array brackets
+                int arrayStart = jsonText.IndexOf("[", scopedRegistriesIndex);
+                int arrayEnd = jsonText.IndexOf("]", scopedRegistriesIndex);
+
+                if (arrayStart != -1 && arrayEnd != -1)
                 {
-                    // Insert registry vào đầu array (sau [)
-                    string before = jsonText.Substring(0, arrayStart + 1);
-                    string after = jsonText.Substring(arrayStart + 1);
-                    jsonText = before + "\n" + dmobinRegistry + ",\n" + after;
+                    // Kiểm tra xem array có trống không
+                    string arrayContent = jsonText.Substring(arrayStart + 1, arrayEnd - arrayStart - 1).Trim();
+
+                    if (string.IsNullOrEmpty(arrayContent))
+                    {
+                        // Array trống - thay thế [] bằng registry
+                        Debug.Log("📝 Tìm thấy scopedRegistries array trống, sẽ thêm registry vào");
+                        string before = jsonText.Substring(0, arrayStart);
+                        string after = jsonText.Substring(arrayEnd + 1);
+                        jsonText = before + "[\n" + dmobinRegistry + "\n  ]" + after;
+                    }
+                    else
+                    {
+                        // Array đã có nội dung - insert registry vào đầu array
+                        Debug.Log("📝 Tìm thấy scopedRegistries array có nội dung, sẽ thêm vào đầu");
+                        string before = jsonText.Substring(0, arrayStart + 1);
+                        string after = jsonText.Substring(arrayStart + 1);
+                        jsonText = before + "\n" + dmobinRegistry + ",\n" + after;
+                    }
                 }
             }
             else
             {
                 // Tạo mới scopedRegistries array - tìm vị trí cuối của dependencies
+                Debug.Log("📝 Không tìm thấy scopedRegistries, sẽ tạo mới");
                 int dependenciesStart = jsonText.IndexOf("\"dependencies\": {");
                 if (dependenciesStart != -1)
                 {
@@ -1196,16 +1255,14 @@ public class PackageListerWindow : EditorWindow
                 }
             }
 
-            Debug.Log("➕ Đã thêm Dmobin UPM registry");
-
             // Lưu file
             System.IO.File.WriteAllText(manifestPath, jsonText);
             Debug.Log("💾 Đã lưu manifest.json");
 
             // Thông báo thành công
             string successMessage = "Đã thêm thành công Dmobin UPM registry!\n\n" +
-                                  "Registry: https://upm.dmobin.studio\n" +
-                                  "Scopes: com.dmobin, com.google, com.applovin";
+                                    "Registry: https://upm.dmobin.studio\n" +
+                                    "Scopes: com.dmobin, com.google, com.applovin";
 
             EditorUtility.DisplayDialog("Thành công!", successMessage, "OK");
 
@@ -1213,25 +1270,19 @@ public class PackageListerWindow : EditorWindow
             UnityEditor.PackageManager.Client.Resolve();
             AssetDatabase.Refresh();
             Debug.Log("✅ Hoàn thành khởi tạo Scoped Registries");
-
         }
         catch (System.Exception e)
         {
             Debug.LogError($"❌ Lỗi khi khởi tạo scoped registries: {e.Message}");
 
-            string errorMessage = $"Không thể thêm Dmobin UPM registry:\n\n{e.Message}\n\n" +
-                                "Hãy đảm bảo:\n" +
-                                "1. Unity Editor có quyền ghi file\n" +
-                                "2. File manifest.json không bị khóa\n" +
-                                "3. Restart Unity Editor và thử lại";
+            string errorMessage = $"Không thể thêm Dmobin UPM registry:\n\n{e.Message}\n\n" + "Hãy đảm bảo:\n" +
+                                  "1. Unity Editor có quyền ghi file\n" + "2. File manifest.json không bị khóa\n" +
+                                  "3. Restart Unity Editor và thử lại";
 
-            EditorUtility.DisplayDialog("Lỗi khởi tạo",
-                errorMessage,
-                "OK");
+            EditorUtility.DisplayDialog("Lỗi khởi tạo", errorMessage, "OK");
         }
     }
 
-    
     private void CheckDefineSymbols()
     {
         // Lấy danh sách các define symbol hiện tại từ Project Settings
@@ -1392,13 +1443,14 @@ public class PackageListerWindow : EditorWindow
             }
         }
     }
-    
+
     private void FixDefineSymbols(List<string> missingDefines, List<string> redundantDefines)
     {
         string currentDefines;
 
 #if UNITY_6000_0_OR_NEWER
-        var targetGroup = UnityEditor.Build.NamedBuildTarget.FromBuildTargetGroup(EditorUserBuildSettings.selectedBuildTargetGroup);
+        var targetGroup =
+            UnityEditor.Build.NamedBuildTarget.FromBuildTargetGroup(EditorUserBuildSettings.selectedBuildTargetGroup);
         currentDefines = PlayerSettings.GetScriptingDefineSymbols(targetGroup);
 #else
             var targetGroup = EditorUserBuildSettings.selectedBuildTargetGroup;
@@ -1406,7 +1458,8 @@ public class PackageListerWindow : EditorWindow
 #endif
 
         // Split the current defines into a list
-        List<string> currentDefinesList = currentDefines.Split(new char[] { ';' }, System.StringSplitOptions.RemoveEmptyEntries).ToList();
+        List<string> currentDefinesList =
+            currentDefines.Split(new char[] { ';' }, System.StringSplitOptions.RemoveEmptyEntries).ToList();
 
         // Add missing defines
         foreach (var define in missingDefines)
@@ -1437,7 +1490,6 @@ public class PackageListerWindow : EditorWindow
         // Show a dialog to inform the user
         EditorUtility.DisplayDialog("Define Symbol", "Đã cập nhật Define Symbol thành công.", "OK");
     }
-
 
     private void LoadPackages()
     {
@@ -1633,7 +1685,7 @@ public class PackageListerWindow : EditorWindow
                 // Cập nhật ngay lập tức vào danh sách installed
                 installedPackages[packageName] = true;
                 installedVersions[packageName] = request.Result.version;
-                
+
                 Debug.Log($"✅ Cài đặt thành công package: {packageId}");
                 // EditorUtility.DisplayDialog("Thành công",
                 //     $"Package '{packageName}' v{request.Result.version} đã được cài đặt thành công!", "OK");
@@ -1643,20 +1695,26 @@ public class PackageListerWindow : EditorWindow
             }
             else if (request.Status >= StatusCode.Failure)
             {
-                Debug.LogError($"❌ Lỗi khi cài đặt package {packageId}: {request.Error?.message}");
-
                 string errorMsg = request.Error?.message ?? "Unknown error";
 
-                // Hiển thị thông báo lỗi chi tiết hơn
-                if (errorMsg.Contains("Cannot resolve package"))
+                // Kiểm tra xem Scoped Registry đã được khởi tạo chưa
+                if (!IsScopedRegistryInitialized())
                 {
-                    errorMsg = $"Không tìm thấy package '{packageName}'.\n\n" + "Hãy đảm bảo rằng:\n" +
-                               "1. Bạn đã thêm Dmobin registry vào manifest.json\n" +
-                               "2. Package này tồn tại trong registry\n" + "3. Bạn có quyền truy cập vào registry";
+                    // Hiển thị dialog xác nhận khởi tạo Scoped Registry
+                    bool shouldInitialize = EditorUtility.DisplayDialog("Chưa cấu hình Scoped Registry",
+                        $"Không thể cài đặt package '{packageName}'.\n\n" +
+                        "Có vẻ như bạn chưa cấu hình Dmobin UPM Scoped Registry.\n\n" +
+                        "Bạn có muốn khởi tạo Scoped Registry ngay bây giờ không?", "Khởi tạo ngay", "Hủy");
+
+                    if (shouldInitialize)
+                    {
+                        // Gọi function khởi tạo Scoped Registry
+                        ScopedRegistriesInitialization();
+                    }
+                    return;
                 }
 
-                EditorUtility.DisplayDialog("Lỗi cài đặt", $"Không thể cài đặt package '{packageName}':\n\n{errorMsg}",
-                    "OK");
+                EditorUtility.DisplayDialog("Lỗi cài đặt", $"Không thể cài đặt package '{packageName}':\n\n{errorMsg}", "OK");
             }
 
             Repaint();
@@ -1978,26 +2036,15 @@ public class PackageListerWindow : EditorWindow
         public List<string> keywords;
         public string tarballUrl;
     }
-    
+
     public static class GDKDefineSymbolsName
     {
         public static readonly string[] AllDefineSymbols = new string[]
         {
-            "GDK_USE_ADJUST",
-            "GDK_USE_ADMOB",
-            "GDK_USE_APPMETRICA",
-            "GDK_USE_FIREBASE",
-            "GDK_USE_FIREBASE_ANALYTICS",
-            "GDK_USE_FIREBASE_CRASHLYTICS",
-            "GDK_USE_FIREBASE_MESSAGING",
-            "GDK_USE_FIREBASE_REMOTE_CONFIG",
-            "GDK_USE_IAP",
-            "GDK_USE_LEVEL_PLAY",
-            "GDK_USE_MAX",
-            "GDK_USE_NATIVE_ADMOB",
-            "GDK_USE_PUBSCALE",
-            "GDK_USE_SPINE",
-            "GDK_USE_YANDEX",
+            "GDK_USE_ADJUST", "GDK_USE_ADMOB", "GDK_USE_APPMETRICA", "GDK_USE_FIREBASE",
+            "GDK_USE_FIREBASE_ANALYTICS", "GDK_USE_FIREBASE_CRASHLYTICS", "GDK_USE_FIREBASE_MESSAGING",
+            "GDK_USE_FIREBASE_REMOTE_CONFIG", "GDK_USE_IAP", "GDK_USE_LEVEL_PLAY", "GDK_USE_MAX",
+            "GDK_USE_NATIVE_ADMOB", "GDK_USE_PUBSCALE", "GDK_USE_SPINE", "GDK_USE_YANDEX",
             "LEVELPLAY_DEPENDENCIES_INSTALLED"
         };
     }

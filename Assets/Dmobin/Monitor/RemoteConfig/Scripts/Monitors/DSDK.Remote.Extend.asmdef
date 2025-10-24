@@ -1,0 +1,20 @@
+{
+    "name": "DSDK.Remote",
+    "rootNamespace": "",
+    "references": [
+        "DSDK.Core",
+        "AdjustSdk.Scripts",
+        "UniTask",
+        "Unity.LevelPlay",
+        "DSDK.AnalyticsPlatform"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

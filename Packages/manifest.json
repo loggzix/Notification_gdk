@@ -1,6 +1,10 @@
 {
   "dependencies": {
     "com.boxqkrtm.ide.cursor": "https://github.com/boxqkrtm/com.unity.ide.cursor.git",
+    "com.dmobin.sdk.audio": "1.0.17",
+    "com.dmobin.sdk.core": "2.0.0",
+    "com.dmobin.sdk.pooling": "1.0.11",
+    "com.dmobin.sdk.uisystem": "1.0.20",
     "com.unity.collab-proxy": "2.9.3",
     "com.unity.feature.development": "1.0.2",
     "com.unity.ide.rider": "3.0.38",
@@ -41,5 +45,16 @@
     "com.unity.modules.vr": "1.0.0",
     "com.unity.modules.wind": "1.0.0",
     "com.unity.modules.xr": "1.0.0"
-  }
+  },
+  "scopedRegistries": [
+    {
+      "name": "Dmobin UPM",
+      "url": "https://upm.dmobin.studio",
+      "scopes": [
+        "com.dmobin",
+        "com.google",
+        "com.applovin"
+      ]
+    }
+  ]
 }
