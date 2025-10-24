@@ -1,0 +1,143 @@
+# =============== #
+# Unity Generated #
+# =============== #
+UnityGenerated/
+Assets/AssetStoreTools*
+Assets/GeneratedLocalRepo*
+*.unitypackage
+*.aab
+*.app
+sysinfo.txt
+crashlytics-build.properties
+
+# ==================== #
+# Meta Files & Builds #
+# ==================== #
+*.pidb.meta
+*.pdb.meta
+*.mdb.meta
+!*.obj
+!*.dll
+!*.meta
+
+# ===================================== #
+# Visual Studio / MonoDevelop / Rider   #
+# ===================================== #
+.vs/
+.idea/
+ExportedObj/
+*.csproj
+*.sln
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.svd
+*.pdb
+*.opendb
+*.booproj
+Assets/Plugins/Editor/JetBrains*
+
+# ====================== #
+# Visual Studio Code    #
+# ====================== #
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+.history
+
+# ================ #
+# Environment     #
+# ================ #
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# ============ #
+# OS Generated #
+# ============ #
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ============== #
+# Backup Files   #
+# ============== #
+*.bak
+*.backup
+*~
+
+# ============== #
+# Cursor Files   #
+# ============== #
+.cursor/
+.cursor.json
+
+# =============== #
+# Unity generated #
+# =============== #
+Release/
+Temp/
+Logs/
+Obj/
+UnityGenerated/
+.vscode/
+Library/
+Assets/AssetStoreTools/*
+Assets/GeneratedLocalRepo*
+
+
+# ===================================== #
+# Visual Studio / MonoDevelop generated #
+# ===================================== #
+
+.vs/
+ExportedObj/
+*.svd
+*.userprefs
+*.csproj
+*.pidb
+*.suo
+*.sln
+*.user
+*.unityproj
+*.booproj
+*.log
+
+# ============ #
+# OS generated #
+# ============ #
+
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+### VisualStudioCode ###
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+### VisualStudioCode Patch ###
+# Ignore all local history of files
+.history
+*.apk
+Logs/Packages-Update.log
+!*.obj
+!*.dll
+!*.meta
