@@ -62,7 +62,7 @@ public class PackageListerWindow : EditorWindow
         
         // Vẫn giữ việc sử dụng Client.List() để cập nhật thông tin chính xác
         listRequest = Client.List();
-        EditorApplication.update += CheckListProgress;
+        CheckListProgressWrapper();
     }
 
     private void LoadInstalledPackagesFromManifest()
@@ -281,13 +281,19 @@ public class PackageListerWindow : EditorWindow
         return -1;
     }
 
-    private void CheckListProgress()
+    private void CheckListProgressWrapper()
     {
-        if (listRequest != null && listRequest.IsCompleted)
+        EditorApplication.delayCall += () =>
         {
-            EditorApplication.update -= CheckListProgress;
+            if (listRequest != null && !listRequest.IsCompleted)
+            {
+                // Nếu chưa hoàn thành, tiếp tục kiểm tra
+                CheckListProgressWrapper();
+                return;
+            }
 
-            if (listRequest.Status == StatusCode.Success)
+            // Request đã hoàn thành hoặc null
+            if (listRequest != null && listRequest.Status == StatusCode.Success)
             {
                 // Cập nhật thông tin từ Client.List() để có version chính xác
                 foreach (var package in listRequest.Result)
@@ -303,7 +309,7 @@ public class PackageListerWindow : EditorWindow
             }
 
             listRequest = null;
-        }
+        };
     }
 
     private void InitializeStyles()
@@ -1059,10 +1065,10 @@ public class PackageListerWindow : EditorWindow
     private void ShowMainContextMenu()
     {
         GenericMenu menu = new GenericMenu();
-
-        // Refresh options
+        
+        menu.AddItem(new GUIContent("Scoped Registries Initialization"), false, () => { ScopedRegistriesInitialization();});
         menu.AddItem(new GUIContent("Check Define Symbol"), false, () => { CheckDefineSymbols(); });
-
+        
         // Show menu at mouse position
         menu.ShowAsContext();
     }
@@ -1113,6 +1119,119 @@ public class PackageListerWindow : EditorWindow
         return false; // Nếu bằng nhau thì không phải newer
     }
 
+    /// <summary>
+    /// Khởi tạo Dmobin UPM Scoped Registry
+    /// </summary>
+    private void ScopedRegistriesInitialization()
+    {
+        Debug.Log("🔧 Bắt đầu khởi tạo Scoped Registries...");
+
+        try
+        {
+            // Đường dẫn đến manifest.json
+            string manifestPath = "Packages/manifest.json";
+
+            // Kiểm tra file có tồn tại không
+            if (!System.IO.File.Exists(manifestPath))
+            {
+                Debug.LogError("❌ Không tìm thấy manifest.json");
+                return;
+            }
+
+            // Đọc nội dung manifest.json
+            string jsonText = System.IO.File.ReadAllText(manifestPath);
+            Debug.Log("📖 Đã đọc manifest.json thành công");
+
+            // Parse JSON đơn giản để kiểm tra registry đã tồn tại chưa
+            if (jsonText.Contains("\"name\": \"Dmobin UPM\""))
+            {
+                Debug.Log("✅ Dmobin UPM registry đã tồn tại");
+                EditorUtility.DisplayDialog("Thông báo",
+                    "Dmobin UPM registry đã được cấu hình sẵn.\n\nRegistry: https://upm.dmobin.studio\nScopes: com.dmobin, com.google, com.applovin",
+                    "OK");
+                return;
+            }
+
+            // Tạo scoped registry JSON
+            string dmobinRegistry = @"    {
+      ""name"": ""Dmobin UPM"",
+      ""url"": ""https://upm.dmobin.studio"",
+      ""scopes"": [
+        ""com.dmobin"",
+        ""com.google"",
+        ""com.applovin""
+      ]
+    }";
+
+            // Kiểm tra xem có scopedRegistries chưa
+            if (jsonText.Contains("\"scopedRegistries\""))
+            {
+                // Tìm vị trí của scopedRegistries array
+                int scopedStart = jsonText.IndexOf("\"scopedRegistries\"");
+                int arrayStart = jsonText.IndexOf("[", scopedStart);
+
+                if (arrayStart != -1)
+                {
+                    // Insert registry vào đầu array (sau [)
+                    string before = jsonText.Substring(0, arrayStart + 1);
+                    string after = jsonText.Substring(arrayStart + 1);
+                    jsonText = before + "\n" + dmobinRegistry + ",\n" + after;
+                }
+            }
+            else
+            {
+                // Tạo mới scopedRegistries array - tìm vị trí cuối của dependencies
+                int dependenciesStart = jsonText.IndexOf("\"dependencies\": {");
+                if (dependenciesStart != -1)
+                {
+                    int braceStart = jsonText.IndexOf("{", dependenciesStart);
+                    int braceEnd = FindMatchingBrace(jsonText, braceStart);
+                    if (braceEnd != -1)
+                    {
+                        // Insert scopedRegistries sau dependencies
+                        string before = jsonText.Substring(0, braceEnd + 1);
+                        string after = jsonText.Substring(braceEnd + 1);
+                        jsonText = before + ",\n  \"scopedRegistries\": [\n" + dmobinRegistry + "\n  ]" + after;
+                    }
+                }
+            }
+
+            Debug.Log("➕ Đã thêm Dmobin UPM registry");
+
+            // Lưu file
+            System.IO.File.WriteAllText(manifestPath, jsonText);
+            Debug.Log("💾 Đã lưu manifest.json");
+
+            // Thông báo thành công
+            string successMessage = "Đã thêm thành công Dmobin UPM registry!\n\n" +
+                                  "Registry: https://upm.dmobin.studio\n" +
+                                  "Scopes: com.dmobin, com.google, com.applovin";
+
+            EditorUtility.DisplayDialog("Thành công!", successMessage, "OK");
+
+            // Refresh Package Manager
+            UnityEditor.PackageManager.Client.Resolve();
+            AssetDatabase.Refresh();
+            Debug.Log("✅ Hoàn thành khởi tạo Scoped Registries");
+
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"❌ Lỗi khi khởi tạo scoped registries: {e.Message}");
+
+            string errorMessage = $"Không thể thêm Dmobin UPM registry:\n\n{e.Message}\n\n" +
+                                "Hãy đảm bảo:\n" +
+                                "1. Unity Editor có quyền ghi file\n" +
+                                "2. File manifest.json không bị khóa\n" +
+                                "3. Restart Unity Editor và thử lại";
+
+            EditorUtility.DisplayDialog("Lỗi khởi tạo",
+                errorMessage,
+                "OK");
+        }
+    }
+
+    
     private void CheckDefineSymbols()
     {
         // Lấy danh sách các define symbol hiện tại từ Project Settings
@@ -1488,16 +1607,22 @@ public class PackageListerWindow : EditorWindow
         // Sử dụng Unity Package Manager để cài đặt từ git URL hoặc registry
         var request = Client.Add(packageId);
 
-        // Theo dõi tiến trình cài đặt
-        EditorApplication.update += () => CheckInstallProgress(request, packageName, packageId);
+        // Theo dõi tiến trình cài đặt - Sử dụng EditorApplication.delayCall
+        CheckInstallProgressWrapper(request, packageName, packageId);
     }
 
-    private void CheckInstallProgress(AddRequest request, string packageName, string packageId)
+    private void CheckInstallProgressWrapper(AddRequest request, string packageName, string packageId)
     {
-        if (request.IsCompleted)
+        EditorApplication.delayCall += () =>
         {
-            EditorApplication.update -= () => CheckInstallProgress(request, packageName, packageId);
+            if (!request.IsCompleted)
+            {
+                // Nếu chưa hoàn thành, tiếp tục kiểm tra
+                CheckInstallProgressWrapper(request, packageName, packageId);
+                return;
+            }
 
+            // Request đã hoàn thành
             if (installingPackages.ContainsKey(packageName))
             {
                 installingPackages[packageName] = false;
@@ -1535,7 +1660,7 @@ public class PackageListerWindow : EditorWindow
             }
 
             Repaint();
-        }
+        };
     }
 
     private void RemovePackage(string packageName)
@@ -1543,7 +1668,7 @@ public class PackageListerWindow : EditorWindow
         Debug.Log($"🗑️ Bắt đầu xóa package: {packageName}");
 
         var request = Client.Remove(packageName);
-        EditorApplication.update += () => CheckRemoveProgress(request, packageName);
+        CheckRemoveProgressWrapper(request, packageName);
     }
 
     private string[] GetPackagesInFolder(string packageName)
@@ -1632,12 +1757,18 @@ public class PackageListerWindow : EditorWindow
         }
     }
 
-    private void CheckRemoveProgress(RemoveRequest request, string packageName)
+    private void CheckRemoveProgressWrapper(RemoveRequest request, string packageName)
     {
-        if (request.IsCompleted)
+        EditorApplication.delayCall += () =>
         {
-            EditorApplication.update -= () => CheckRemoveProgress(request, packageName);
+            if (!request.IsCompleted)
+            {
+                // Nếu chưa hoàn thành, tiếp tục kiểm tra
+                CheckRemoveProgressWrapper(request, packageName);
+                return;
+            }
 
+            // Request đã hoàn thành
             if (request.Status == StatusCode.Success)
             {
                 // Xóa khỏi danh sách installed
@@ -1663,7 +1794,7 @@ public class PackageListerWindow : EditorWindow
             }
 
             Repaint();
-        }
+        };
     }
 
     private void DrawTextWithHighlight(string text, GUIStyle style, string highlight)
