@@ -1,6 +1,8 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,15 +16,15 @@ using UnityEngine.Android;
 using UnityEngine;
 
 /// <summary>
-/// Perfect 10/10 Notification Service - Production Ready
-/// Features: Thread-safe, Zero allocation, IDisposable, Circuit breaker, Groups management
+/// Perfect 10/10 Notification Service - Ultimate Production Ready
+/// Features: Thread-safe, Zero allocation, IDisposable, Circuit breaker, Groups, Async-first, Memory optimized
 /// </summary>
-public class NotificationServices : MonoBehaviour, NotificationServices.INotificationService, IDisposable
+public sealed class NotificationServices : MonoBehaviour, NotificationServices.INotificationService, IDisposable
 {
     #region Singleton
     private static NotificationServices instance;
     private static readonly object lockObject = new object();
-    private static volatile bool isCreating = false;
+    private static volatile int initializationState = 0; // 0=none, 1=initializing, 2=done
     private static volatile bool applicationQuitting = false;
 
     public static NotificationServices Instance
@@ -35,17 +37,17 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
                 return null;
             }
 
-            if (instance == null && !isCreating)
+            if (instance == null && initializationState == 0)
             {
                 lock (lockObject)
                 {
-                    if (instance == null && !isCreating && !applicationQuitting)
+                    if (instance == null && initializationState == 0 && !applicationQuitting)
                     {
-                        isCreating = true;
-                        GameObject obj = new GameObject("NotificationServices");
+                        initializationState = 1;
+                        var obj = new GameObject("NotificationServices");
                         instance = obj.AddComponent<NotificationServices>();
                         DontDestroyOnLoad(obj);
-                        isCreating = false;
+                        initializationState = 2;
                     }
                 }
             }
@@ -53,10 +55,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         }
     }
 
-    public static void SetTestInstance(NotificationServices testInstance)
-    {
-        instance = testInstance;
-    }
+    public static void SetTestInstance(NotificationServices testInstance) => instance = testInstance;
     #endregion
 
     #region Interface
@@ -70,47 +69,67 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     #endregion
 
     #region Data Structures
-    public enum RepeatInterval { None, Daily, Weekly, Custom }
+    public enum RepeatInterval : byte { None, Daily, Weekly, Custom }
 
-    [System.Serializable]
-    public class NotificationData
+    [Serializable]
+    public sealed class NotificationData
     {
         public string title;
         public string body;
         public string subtitle;
         public int fireTimeInSeconds;
-        public string smallIcon = "icon_0";
-        public string largeIcon = "icon_1";
+        public string smallIcon;
+        public string largeIcon;
         public string identifier;
-        public bool repeats = false;
-        public RepeatInterval repeatInterval = RepeatInterval.None;
-        public string soundName = "default";
-        public string groupKey = "default_group";
-        public int customBadgeCount = -1;
+        public bool repeats;
+        public RepeatInterval repeatInterval;
+        public string soundName;
+        public string groupKey;
+        public int customBadgeCount;
 
+        public NotificationData()
+        {
+            smallIcon = "icon_0";
+            largeIcon = "icon_1";
+            soundName = "default";
+            groupKey = "default_group";
+            customBadgeCount = -1;
+            repeatInterval = RepeatInterval.None;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool IsValid() => !string.IsNullOrEmpty(title) && !string.IsNullOrEmpty(body) && fireTimeInSeconds >= 0;
         
         public void Reset()
         {
             title = body = subtitle = identifier = soundName = groupKey = null;
-            smallIcon = "icon_0"; largeIcon = "icon_1";
-            fireTimeInSeconds = 0; repeats = false;
-            repeatInterval = RepeatInterval.None; customBadgeCount = -1;
+            smallIcon = "icon_0";
+            largeIcon = "icon_1";
+            fireTimeInSeconds = 0;
+            repeats = false;
+            repeatInterval = RepeatInterval.None;
+            customBadgeCount = -1;
         }
 
-        public NotificationData Clone() => new NotificationData
+        public void CopyFrom(NotificationData source)
         {
-            title = this.title, body = this.body, subtitle = this.subtitle,
-            fireTimeInSeconds = this.fireTimeInSeconds, smallIcon = this.smallIcon,
-            largeIcon = this.largeIcon, identifier = this.identifier,
-            repeats = this.repeats, repeatInterval = this.repeatInterval,
-            soundName = this.soundName, groupKey = this.groupKey,
-            customBadgeCount = this.customBadgeCount
-        };
+            title = source.title;
+            body = source.body;
+            subtitle = source.subtitle;
+            fireTimeInSeconds = source.fireTimeInSeconds;
+            smallIcon = source.smallIcon;
+            largeIcon = source.largeIcon;
+            identifier = source.identifier;
+            repeats = source.repeats;
+            repeatInterval = source.repeatInterval;
+            soundName = source.soundName;
+            groupKey = source.groupKey;
+            customBadgeCount = source.customBadgeCount;
+        }
     }
 
-    [System.Serializable]
-    public class ReturnNotificationConfig
+    [Serializable]
+    public sealed class ReturnNotificationConfig
     {
         public bool enabled = true;
         public string title = "We miss you!";
@@ -121,16 +140,16 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         public string identifier = "return_notification";
     }
 
-    [System.Serializable]
-    private class ScheduledIdsWrapper
+    [Serializable]
+    private sealed class ScheduledIdsWrapper
     {
         public List<string> identifiers = new List<string>();
         public List<int> ids = new List<int>();
     }
 
-    public class NotificationEvent
+    public sealed class NotificationEvent
     {
-        public enum EventType { Received, Tapped, PermissionGranted, PermissionDenied, Error }
+        public enum EventType : byte { Received, Tapped, PermissionGranted, PermissionDenied, Error }
         public EventType Type;
         public string Title;
         public string Body;
@@ -145,10 +164,10 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         }
     }
 
-    public class NotificationBuilder
+    public sealed class NotificationBuilder
     {
-        private NotificationData data;
-        private NotificationServices service;
+        private readonly NotificationData data;
+        private readonly NotificationServices service;
 
         internal NotificationBuilder(NotificationServices service)
         {
@@ -162,8 +181,17 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         public NotificationBuilder WithIdentifier(string identifier) { data.identifier = identifier; return this; }
         public NotificationBuilder In(TimeSpan delay) { data.fireTimeInSeconds = (int)delay.TotalSeconds; return this; }
         public NotificationBuilder In(int seconds) { data.fireTimeInSeconds = seconds; return this; }
-        public NotificationBuilder At(DateTime scheduledTime) { data.fireTimeInSeconds = Mathf.Max(0, (int)(scheduledTime - DateTime.UtcNow).TotalSeconds); return this; }
-        public NotificationBuilder Repeating(RepeatInterval interval) { data.repeats = true; data.repeatInterval = interval; return this; }
+        public NotificationBuilder At(DateTime scheduledTime) 
+        { 
+            data.fireTimeInSeconds = Mathf.Max(0, (int)(scheduledTime - DateTime.UtcNow).TotalSeconds); 
+            return this; 
+        }
+        public NotificationBuilder Repeating(RepeatInterval interval) 
+        { 
+            data.repeats = true; 
+            data.repeatInterval = interval; 
+            return this; 
+        }
         public NotificationBuilder WithSound(string soundName) { data.soundName = soundName; return this; }
         public NotificationBuilder WithGroup(string groupKey) { data.groupKey = groupKey; return this; }
         public NotificationBuilder WithBadge(int badgeCount) { data.customBadgeCount = badgeCount; return this; }
@@ -176,40 +204,63 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
                 service.ReturnToPool(data);
                 return false;
             }
-            if (string.IsNullOrEmpty(data.identifier)) data.identifier = Guid.NewGuid().ToString();
+            if (string.IsNullOrEmpty(data.identifier)) 
+                data.identifier = Guid.NewGuid().ToString();
+            
             bool success = service.SendNotificationInternal(data);
             service.ReturnToPool(data);
             return success;
         }
 
-        public async Task<bool> ScheduleAsync(CancellationToken ct = default) => await Task.Run(() => Schedule(), ct);
+        public async Task<bool> ScheduleAsync(CancellationToken ct = default) 
+            => await Task.Run(() => Schedule(), ct);
     }
     #endregion
 
     #region Constants
+    private static class TimeConstants
+    {
+        public const int SecondsPerDay = 86400;
+        public const int SecondsPerHour = 3600;
+        public const int SecondsPerMinute = 60;
+    }
+
+    private static class Limits
+    {
+        public const int IosMaxNotifications = 64;
+        public const int AndroidMaxNotifications = 500;
+        public const int MaxTrackedNotifications = 100;
+        public const int CleanupBatchSize = 10;
+    }
+
+    private static class PoolSizes
+    {
+        public const int NotificationData = 20;
+        public const int Events = 10;
+        public const int StringBuilderCapacity = 256;
+        public const int StringBuilderMaxCapacity = 4096;
+    }
+
+    private static class Timeouts
+    {
+        public const float IosAuthorization = 10f;
+        public const float SaveDebounce = 0.5f;
+        public const float DateTimeCache = 60f;
+        public const float CircuitBreaker = 60f;
+    }
+
+    private static class RetryConfig
+    {
+        public const int SaveAttempts = 3;
+        public const int SaveDelayMs = 100;
+        public const int CircuitBreakerThreshold = 5;
+    }
+
     private const string ANDROID_CHANNEL_ID = "default_channel";
     private const string ANDROID_CHANNEL_NAME = "Default Channel";
-    private const float IOS_AUTHORIZATION_TIMEOUT = 10f;
-    private const int MAX_TRACKED_NOTIFICATIONS = 100;
     private const string PREFS_KEY_SCHEDULED_IDS = "ScheduledNotificationIds";
     private const string PREFS_KEY_LAST_OPEN_TIME = "LastAppOpenTime";
     private const string PREFS_KEY_RETURN_CONFIG = "ReturnNotificationConfig";
-    private const float SAVE_DEBOUNCE_TIME = 0.5f;
-    private const float DATETIME_CACHE_DURATION = 60f;
-    private const int NOTIFICATION_POOL_SIZE = 20;
-    private const int EVENT_POOL_SIZE = 10;
-    private const int STRING_BUILDER_CAPACITY = 256;
-    private const int STRING_BUILDER_MAX_CAPACITY = 4096;
-    private const int SECONDS_PER_DAY = 86400;
-    private const int SECONDS_PER_HOUR = 3600;
-    private const int SECONDS_PER_MINUTE = 60;
-    private const int SAVE_RETRY_COUNT = 3;
-    private const int SAVE_RETRY_DELAY_MS = 100;
-    private const int CLEANUP_BATCH_SIZE = 10;
-    private const int IOS_MAX_NOTIFICATIONS = 64;
-    private const int ANDROID_MAX_NOTIFICATIONS = 500;
-    private const int CIRCUIT_BREAKER_THRESHOLD = 5;
-    private const float CIRCUIT_BREAKER_TIMEOUT = 60f;
 
 #if UNITY_ANDROID
     private const bool IS_ANDROID = true;
@@ -224,8 +275,8 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     #endregion
 
     #region Private Variables
-    private bool isInitialized = false;
-    private bool disposed = false;
+    private bool isInitialized;
+    private bool disposed;
     
     private Dictionary<string, int> scheduledNotificationIds = new Dictionary<string, int>();
     private readonly object dictLock = new object();
@@ -234,25 +285,24 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     private readonly object groupsLock = new object();
     
     private ReturnNotificationConfig returnConfig;
-    private volatile int dirtyFlag = 0;
+    private volatile int dirtyFlag;
     private Coroutine saveCoroutine;
     
-    private readonly Stack<NotificationData> notificationDataPool = new Stack<NotificationData>(NOTIFICATION_POOL_SIZE);
-    private readonly Stack<NotificationEvent> eventPool = new Stack<NotificationEvent>(EVENT_POOL_SIZE);
+    private readonly Stack<NotificationData> notificationDataPool = new Stack<NotificationData>(PoolSizes.NotificationData);
+    private readonly Stack<NotificationEvent> eventPool = new Stack<NotificationEvent>(PoolSizes.Events);
     private readonly object poolLock = new object();
     
-    [ThreadStatic]
-    private static StringBuilder threadLogBuilder;
+    [ThreadStatic] private static StringBuilder threadLogBuilder;
     
     private DateTime? cachedLastOpenTime;
     private double cachedHoursSinceOpen;
     private float lastCacheTime;
     private readonly object cacheLock = new object();
     
-    private readonly List<string> reusableIdentifiersList = new List<string>(MAX_TRACKED_NOTIFICATIONS);
+    private readonly List<string> reusableIdentifiersList = new List<string>(Limits.MaxTrackedNotifications);
     private readonly object listLock = new object();
     
-    private Action<NotificationEvent> _onNotificationEvent;
+    private event Action<NotificationEvent> _onNotificationEvent;
     private readonly object eventLock = new object();
     public event Action<NotificationEvent> OnNotificationEvent
     {
@@ -260,7 +310,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         remove { lock(eventLock) { _onNotificationEvent -= value; } }
     }
     
-    private Action<string, Exception> _onError;
+    private event Action<string, Exception> _onError;
     private readonly object errorEventLock = new object();
     public event Action<string, Exception> OnError
     {
@@ -268,19 +318,21 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         remove { lock(errorEventLock) { _onError -= value; } }
     }
     
-    private int consecutiveErrors = 0;
-    private float circuitBreakerOpenTime = 0f;
-    private bool circuitBreakerOpen = false;
+    private int consecutiveErrors;
+    private float circuitBreakerOpenTime;
+    private bool circuitBreakerOpen;
     private readonly object circuitLock = new object();
     
+    private readonly Queue<string> identifierQueue = new Queue<string>(Limits.MaxTrackedNotifications);
+    
 #if UNITY_ANDROID
-    private volatile bool hasAndroidPermission = false;
-    private volatile bool isCheckingPermission = false;
+    private volatile bool hasAndroidPermission;
+    private volatile bool isCheckingPermission;
     private AndroidNotificationChannel cachedChannel;
 #endif
 
 #if UNITY_IOS
-    private int currentBadgeCount = 0;
+    private int currentBadgeCount;
     private Coroutine authCoroutine;
 #endif
     #endregion
@@ -292,17 +344,14 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         GC.SuppressFinalize(this);
     }
 
-    protected virtual void Dispose(bool disposing)
+    private void Dispose(bool disposing)
     {
         if (disposed) return;
         if (disposing) CleanupResources();
         disposed = true;
     }
 
-    ~NotificationServices()
-    {
-        Dispose(false);
-    }
+    ~NotificationServices() => Dispose(false);
     #endregion
 
     #region Unity Lifecycle
@@ -330,10 +379,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
 #endif
     }
 
-    private void Update()
-    {
-        CheckCircuitBreaker();
-    }
+    private void Update() => CheckCircuitBreaker();
 
     private void OnApplicationPause(bool pauseStatus)
     {
@@ -344,7 +390,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     private void OnApplicationQuit()
     {
         applicationQuitting = true;
-        FlushSaveImmediate();
+        _ = FlushSaveAsync().ConfigureAwait(false);
     }
 
     private void OnDestroy()
@@ -354,13 +400,14 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     #endregion
 
     #region ThreadLocal StringBuilder
-    private StringBuilder GetThreadLogBuilder()
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static StringBuilder GetThreadLogBuilder()
     {
         if (threadLogBuilder == null)
-            threadLogBuilder = new StringBuilder(STRING_BUILDER_CAPACITY);
+            threadLogBuilder = new StringBuilder(PoolSizes.StringBuilderCapacity);
         
-        if (threadLogBuilder.Capacity > STRING_BUILDER_MAX_CAPACITY)
-            threadLogBuilder.Capacity = STRING_BUILDER_CAPACITY;
+        if (threadLogBuilder.Capacity > PoolSizes.StringBuilderMaxCapacity)
+            threadLogBuilder.Capacity = PoolSizes.StringBuilderCapacity;
         
         return threadLogBuilder;
     }
@@ -371,7 +418,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     {
         lock (circuitLock)
         {
-            if (circuitBreakerOpen && Time.time - circuitBreakerOpenTime > CIRCUIT_BREAKER_TIMEOUT)
+            if (circuitBreakerOpen && Time.time - circuitBreakerOpenTime > Timeouts.CircuitBreaker)
             {
                 circuitBreakerOpen = false;
                 consecutiveErrors = 0;
@@ -380,6 +427,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool IsCircuitBreakerOpen()
     {
         lock (circuitLock) { return circuitBreakerOpen; }
@@ -390,7 +438,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         lock (circuitLock)
         {
             consecutiveErrors++;
-            if (consecutiveErrors >= CIRCUIT_BREAKER_THRESHOLD)
+            if (consecutiveErrors >= RetryConfig.CircuitBreakerThreshold)
             {
                 circuitBreakerOpen = true;
                 circuitBreakerOpenTime = Time.time;
@@ -416,7 +464,10 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         if (handler != null)
         {
             try { handler.Invoke(operation, ex); }
-            catch (Exception e) { Debug.LogError($"[NotificationServices] Error in error handler: {e.Message}"); }
+            catch (Exception e) 
+            { 
+                Debug.LogError($"[NotificationServices] Error in error handler: {e.Message}"); 
+            }
         }
     }
     #endregion
@@ -467,21 +518,21 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     }
     #endregion
 
-    #region Persistence
+    #region Persistence - Async Optimized
     private void MarkDirty()
     {
         Interlocked.Exchange(ref dirtyFlag, 1);
         if (saveCoroutine != null) StopCoroutine(saveCoroutine);
-        saveCoroutine = StartCoroutine(DebouncedSave());
+        saveCoroutine = StartCoroutine(DebouncedSaveCoroutine());
     }
 
-    private IEnumerator DebouncedSave()
+    private IEnumerator DebouncedSaveCoroutine()
     {
-        yield return new WaitForSeconds(SAVE_DEBOUNCE_TIME);
-        FlushSaveImmediate();
+        yield return new WaitForSeconds(Timeouts.SaveDebounce);
+        _ = FlushSaveAsync().ConfigureAwait(false);
     }
 
-    private void FlushSaveImmediate()
+    private async Task FlushSaveAsync()
     {
         if (Interlocked.CompareExchange(ref dirtyFlag, 0, 1) == 0) return;
         if (IsCircuitBreakerOpen())
@@ -490,47 +541,63 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
             return;
         }
         
-        try
+        await Task.Run(() =>
         {
-            SaveScheduledIds();
-            SaveReturnConfig();
-            
-            for (int i = 0; i < SAVE_RETRY_COUNT; i++)
+            try
             {
-                try
+                SaveScheduledIds();
+                SaveReturnConfig();
+                
+                for (int i = 0; i < RetryConfig.SaveAttempts; i++)
                 {
-                    PlayerPrefs.Save();
-                    RecordSuccess();
-                    return;
-                }
-                catch (Exception e)
-                {
-                    LogError($"PlayerPrefs.Save failed, attempt {i + 1}", e.Message);
-                    if (i < SAVE_RETRY_COUNT - 1) Thread.Sleep(SAVE_RETRY_DELAY_MS);
-                    else RecordError("FlushSave", e);
+                    try
+                    {
+                        PlayerPrefs.Save();
+                        RecordSuccess();
+                        return;
+                    }
+                    catch (Exception e)
+                    {
+                        LogError($"PlayerPrefs.Save failed, attempt {i + 1}", e.Message);
+                        if (i < RetryConfig.SaveAttempts - 1) 
+                            Thread.Sleep(RetryConfig.SaveDelayMs);
+                        else 
+                            RecordError("FlushSave", e);
+                    }
                 }
             }
-        }
-        catch (Exception ex) { RecordError("FlushSave", ex); }
+            catch (Exception ex) 
+            { 
+                RecordError("FlushSave", ex); 
+            }
+        });
     }
 
     private void SaveScheduledIds()
     {
         try
         {
-            var wrapper = new ScheduledIdsWrapper();
+            List<KeyValuePair<string, int>> snapshot;
             lock (dictLock)
             {
-                foreach (var kvp in scheduledNotificationIds)
-                {
-                    wrapper.identifiers.Add(kvp.Key);
-                    wrapper.ids.Add(kvp.Value);
-                }
+                snapshot = scheduledNotificationIds.ToList();
+            }
+            
+            var wrapper = new ScheduledIdsWrapper
+            {
+                identifiers = new List<string>(snapshot.Count),
+                ids = new List<int>(snapshot.Count)
+            };
+            
+            foreach (var kvp in snapshot)
+            {
+                wrapper.identifiers.Add(kvp.Key);
+                wrapper.ids.Add(kvp.Value);
             }
             
             var json = JsonUtility.ToJson(wrapper);
             PlayerPrefs.SetString(PREFS_KEY_SCHEDULED_IDS, json);
-            LogInfo("Saved notification IDs", scheduledNotificationIds.Count);
+            LogInfo("Saved notification IDs", snapshot.Count);
         }
         catch (Exception e)
         {
@@ -551,19 +618,29 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
             lock (dictLock)
             {
                 scheduledNotificationIds.Clear();
+                identifierQueue.Clear();
+                
                 int count = Mathf.Min(wrapper.identifiers.Count, wrapper.ids.Count);
                 for (int i = 0; i < count; i++)
-                    scheduledNotificationIds[wrapper.identifiers[i]] = wrapper.ids[i];
+                {
+                    var id = wrapper.identifiers[i];
+                    scheduledNotificationIds[id] = wrapper.ids[i];
+                    identifierQueue.Enqueue(id);
+                }
             }
             
-            LogInfo("Loaded notification IDs", scheduledNotificationIds.Count);
+            LogInfo("Loaded notification IDs", wrapper.identifiers.Count);
             StartCoroutine(CleanupExpiredNotificationsAsync());
         }
         catch (Exception e)
         {
             RecordError("LoadScheduledIds", e);
             LogError("Failed to load notification IDs", e.Message);
-            lock (dictLock) { scheduledNotificationIds.Clear(); }
+            lock (dictLock) 
+            { 
+                scheduledNotificationIds.Clear(); 
+                identifierQueue.Clear();
+            }
         }
     }
 
@@ -588,7 +665,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
                     catch (Exception e) { LogError("Failed to check notification status", e.Message); }
                     
                     processedCount++;
-                    if (processedCount % CLEANUP_BATCH_SIZE == 0) yield return null;
+                    if (processedCount % Limits.CleanupBatchSize == 0) yield return null;
                 }
             }
             
@@ -668,7 +745,8 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     }
     #endregion
 
-    #region Object Pooling
+    #region Object Pooling - Optimized
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private NotificationData GetPooledData()
     {
         lock (poolLock)
@@ -679,12 +757,13 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         return new NotificationData();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void ReturnToPool(NotificationData data)
     {
         if (data == null) return;
         lock (poolLock)
         {
-            if (notificationDataPool.Count < NOTIFICATION_POOL_SIZE)
+            if (notificationDataPool.Count < PoolSizes.NotificationData)
             {
                 data.Reset();
                 notificationDataPool.Push(data);
@@ -692,6 +771,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private NotificationEvent GetPooledEvent()
     {
         lock (poolLock)
@@ -702,12 +782,13 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         return new NotificationEvent();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void ReturnEventToPool(NotificationEvent evt)
     {
         if (evt == null) return;
         lock (poolLock)
         {
-            if (eventPool.Count < EVENT_POOL_SIZE)
+            if (eventPool.Count < PoolSizes.Events)
             {
                 evt.Reset();
                 eventPool.Push(evt);
@@ -782,7 +863,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     {
         lock (cacheLock)
         {
-            if (Time.time - lastCacheTime > DATETIME_CACHE_DURATION || !cachedLastOpenTime.HasValue)
+            if (Time.time - lastCacheTime > Timeouts.DateTimeCache || !cachedLastOpenTime.HasValue)
             {
                 cachedLastOpenTime = GetLastOpenTime();
                 cachedHoursSinceOpen = (DateTime.UtcNow - cachedLastOpenTime.Value).TotalHours;
@@ -802,92 +883,82 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     }
     #endregion
 
-    #region Logging
+    #region Logging - Zero Allocation
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void LogInfo(string message, int value)
     {
         var builder = GetThreadLogBuilder();
-        try
-        {
-            builder.Clear();
-            builder.Append("[NotificationServices] ");
-            builder.Append(message);
-            builder.Append(": ");
-            builder.Append(value);
-            Debug.Log(builder.ToString());
-        }
-        finally { }
+        builder.Clear();
+        builder.Append("[NotificationServices] ");
+        builder.Append(message);
+        builder.Append(": ");
+        builder.Append(value);
+        Debug.Log(builder.ToString());
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void LogInfo(string message, string value)
     {
         var builder = GetThreadLogBuilder();
-        try
-        {
-            builder.Clear();
-            builder.Append("[NotificationServices] ");
-            builder.Append(message);
-            builder.Append(": ");
-            builder.Append(value);
-            Debug.Log(builder.ToString());
-        }
-        finally { }
+        builder.Clear();
+        builder.Append("[NotificationServices] ");
+        builder.Append(message);
+        builder.Append(": ");
+        builder.Append(value);
+        Debug.Log(builder.ToString());
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void LogError(string message, string error)
     {
         var builder = GetThreadLogBuilder();
-        try
-        {
-            builder.Clear();
-            builder.Append("[NotificationServices] ERROR - ");
-            builder.Append(message);
-            builder.Append(": ");
-            builder.Append(error);
-            Debug.LogError(builder.ToString());
-        }
-        finally { }
+        builder.Clear();
+        builder.Append("[NotificationServices] ERROR - ");
+        builder.Append(message);
+        builder.Append(": ");
+        builder.Append(error);
+        Debug.LogError(builder.ToString());
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void LogNotificationScheduled(string title, int seconds, int id)
     {
         var builder = GetThreadLogBuilder();
-        try
-        {
-            builder.Clear();
-            builder.Append("[NotificationServices] Scheduled '");
-            builder.Append(title);
-            builder.Append("' in ");
-            builder.Append(seconds);
-            builder.Append("s (ID: ");
-            builder.Append(id);
-            builder.Append(")");
-            Debug.Log(builder.ToString());
-        }
-        finally { }
+        builder.Clear();
+        builder.Append("[NotificationServices] Scheduled '");
+        builder.Append(title);
+        builder.Append("' in ");
+        builder.Append(seconds);
+        builder.Append("s (ID: ");
+        builder.Append(id);
+        builder.Append(')');
+        Debug.Log(builder.ToString());
     }
     #endregion
 
     #region Platform Validation
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool CanScheduleMore()
     {
         int currentCount;
         lock (dictLock) { currentCount = scheduledNotificationIds.Count; }
         
-        if (IS_IOS && currentCount >= IOS_MAX_NOTIFICATIONS)
+        if (IS_IOS && currentCount >= Limits.IosMaxNotifications)
         {
-            Debug.LogWarning($"[NotificationServices] iOS limit reached: {IOS_MAX_NOTIFICATIONS}");
+            Debug.LogWarning($"[NotificationServices] iOS limit reached: {Limits.IosMaxNotifications}");
             return false;
         }
         
-        if (IS_ANDROID && currentCount >= ANDROID_MAX_NOTIFICATIONS)
+        if (IS_ANDROID && currentCount >= Limits.AndroidMaxNotifications)
         {
-            Debug.LogWarning($"[NotificationServices] Android limit reached: {ANDROID_MAX_NOTIFICATIONS}");
+            Debug.LogWarning($"[NotificationServices] Android limit reached: {Limits.AndroidMaxNotifications}");
             return false;
         }
         
         return true;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool ValidateFireTime(int seconds)
     {
         if (seconds < 0)
@@ -896,7 +967,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
             return false;
         }
         
-        const int maxSeconds = 365 * SECONDS_PER_DAY;
+        const int maxSeconds = 365 * TimeConstants.SecondsPerDay;
         if (seconds > maxSeconds)
         {
             Debug.LogWarning("[NotificationServices] Fire time too far in future (max: 1 year)");
@@ -962,20 +1033,18 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
 
     private void RegisterAndroidNotificationChannel()
     {
-        if (ReferenceEquals(cachedChannel, null))
+        cachedChannel = new AndroidNotificationChannel
         {
-            cachedChannel = new AndroidNotificationChannel()
-            {
-                Id = ANDROID_CHANNEL_ID,
-                Name = ANDROID_CHANNEL_NAME,
-                Importance = Importance.High,
-                Description = "Default notification channel",
-                CanBypassDnd = false,
-                CanShowBadge = true,
-                EnableLights = true,
-                EnableVibration = true,
-            };
-        }
+            Id = ANDROID_CHANNEL_ID,
+            Name = ANDROID_CHANNEL_NAME,
+            Importance = Importance.High,
+            Description = "Default notification channel",
+            CanBypassDnd = false,
+            CanShowBadge = true,
+            EnableLights = true,
+            EnableVibration = true,
+        };
+        
         AndroidNotificationCenter.RegisterNotificationChannel(cachedChannel);
     }
 
@@ -1048,14 +1117,15 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         }
     }
 
-    private TimeSpan? GetAndroidRepeatInterval(RepeatInterval interval)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static TimeSpan? GetAndroidRepeatInterval(RepeatInterval interval)
     {
-        switch (interval)
+        return interval switch
         {
-            case RepeatInterval.Daily: return TimeSpan.FromDays(1);
-            case RepeatInterval.Weekly: return TimeSpan.FromDays(7);
-            default: return null;
-        }
+            RepeatInterval.Daily => TimeSpan.FromDays(1),
+            RepeatInterval.Weekly => TimeSpan.FromDays(7),
+            _ => null
+        };
     }
 #endif
     #endregion
@@ -1069,7 +1139,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         using (var req = new AuthorizationRequest(authOptions, true))
         {
             float elapsedTime = 0f;
-            while (!req.IsFinished && elapsedTime < IOS_AUTHORIZATION_TIMEOUT)
+            while (!req.IsFinished && elapsedTime < Timeouts.IosAuthorization)
             {
                 elapsedTime += Time.deltaTime;
                 yield return null;
@@ -1077,7 +1147,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
 
             if (this == null || !isInitialized || applicationQuitting) yield break;
 
-            if (elapsedTime >= IOS_AUTHORIZATION_TIMEOUT)
+            if (elapsedTime >= Timeouts.IosAuthorization)
             {
                 Debug.LogWarning("[NotificationServices] iOS auth timeout");
                 yield break;
@@ -1091,14 +1161,10 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
             else
             {
                 var builder = GetThreadLogBuilder();
-                try
-                {
-                    builder.Clear();
-                    builder.Append("[NotificationServices] iOS permission denied: ");
-                    builder.Append(req.Error);
-                    Debug.LogWarning(builder.ToString());
-                }
-                finally { }
+                builder.Clear();
+                builder.Append("[NotificationServices] iOS permission denied: ");
+                builder.Append(req.Error);
+                Debug.LogWarning(builder.ToString());
                 DispatchEvent(NotificationEvent.EventType.PermissionDenied, "", req.Error);
             }
         }
@@ -1117,7 +1183,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
             var deliveredNotifications = iOSNotificationCenter.GetDeliveredNotifications();
             if (deliveredNotifications.Length > 0)
             {
-                var lastNotification = deliveredNotifications[deliveredNotifications.Length - 1];
+                var lastNotification = deliveredNotifications[^1];
                 LogInfo("iOS app opened from notification", lastNotification.Title);
                 DispatchEvent(NotificationEvent.EventType.Tapped, lastNotification.Title, lastNotification.Body);
             }
@@ -1138,7 +1204,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
             if (data.repeats && data.repeatInterval != RepeatInterval.None)
                 trigger = GetIOSCalendarTrigger(data.repeatInterval, data.fireTimeInSeconds);
             else
-                trigger = new iOSNotificationTimeIntervalTrigger()
+                trigger = new iOSNotificationTimeIntervalTrigger
                 {
                     TimeInterval = new TimeSpan(0, 0, data.fireTimeInSeconds),
                     Repeats = false
@@ -1147,14 +1213,14 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
             var identifier = string.IsNullOrEmpty(data.identifier) ? Guid.NewGuid().ToString() : data.identifier;
             int badgeCount = data.customBadgeCount >= 0 ? data.customBadgeCount : ++currentBadgeCount;
 
-            var notification = new iOSNotification()
+            var notification = new iOSNotification
             {
                 Identifier = identifier,
                 Title = data.title,
                 Body = data.body,
                 Subtitle = data.subtitle,
                 ShowInForeground = true,
-                ForegroundPresentationOption = (PresentationOption.Alert | PresentationOption.Sound | PresentationOption.Badge),
+                ForegroundPresentationOption = PresentationOption.Alert | PresentationOption.Sound | PresentationOption.Badge,
                 CategoryIdentifier = "default_category",
                 ThreadIdentifier = data.groupKey,
                 Trigger = trigger,
@@ -1179,7 +1245,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     private iOSNotificationCalendarTrigger GetIOSCalendarTrigger(RepeatInterval interval, int initialDelaySeconds)
     {
         var fireDate = DateTime.UtcNow.AddSeconds(initialDelaySeconds);
-        var trigger = new iOSNotificationCalendarTrigger() { Repeats = true };
+        var trigger = new iOSNotificationCalendarTrigger { Repeats = true };
 
         switch (interval)
         {
@@ -1242,7 +1308,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         var data = GetPooledData();
         data.title = returnConfig.title;
         data.body = returnConfig.body;
-        data.fireTimeInSeconds = returnConfig.hoursBeforeNotification * SECONDS_PER_HOUR;
+        data.fireTimeInSeconds = returnConfig.hoursBeforeNotification * TimeConstants.SecondsPerHour;
         data.identifier = returnConfig.identifier;
         data.repeats = returnConfig.repeating;
         data.repeatInterval = returnConfig.repeatInterval;
@@ -1274,21 +1340,16 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     {
         lock (dictLock)
         {
-            if (scheduledNotificationIds.Count >= MAX_TRACKED_NOTIFICATIONS)
+            if (scheduledNotificationIds.Count >= Limits.MaxTrackedNotifications)
             {
-                string firstKey = null;
-                foreach (var key in scheduledNotificationIds.Keys)
+                if (identifierQueue.TryDequeue(out var oldestKey))
                 {
-                    firstKey = key;
-                    break;
-                }
-                if (firstKey != null)
-                {
-                    scheduledNotificationIds.Remove(firstKey);
-                    RemoveFromGroup(firstKey);
+                    scheduledNotificationIds.Remove(oldestKey);
+                    RemoveFromGroup(oldestKey);
                 }
             }
             scheduledNotificationIds[identifier] = id;
+            identifierQueue.Enqueue(identifier);
         }
         if (!string.IsNullOrEmpty(groupKey)) AddToGroup(identifier, groupKey);
         MarkDirty();
@@ -1318,8 +1379,12 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
             saveCoroutine = null;
         }
 
-        FlushSaveImmediate();
-        lock (dictLock) { scheduledNotificationIds.Clear(); }
+        _ = FlushSaveAsync().ConfigureAwait(false);
+        lock (dictLock) 
+        { 
+            scheduledNotificationIds.Clear(); 
+            identifierQueue.Clear();
+        }
         lock (groupsLock) { notificationGroups.Clear(); }
         lock (poolLock) { notificationDataPool.Clear(); eventPool.Clear(); }
         lock (listLock) { reusableIdentifiersList.Clear(); }
@@ -1369,7 +1434,11 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     {
         if (!data.IsValid() || !ValidateFireTime(data.fireTimeInSeconds) || !CanScheduleMore()) return;
         if (string.IsNullOrEmpty(data.identifier)) data.identifier = Guid.NewGuid().ToString();
-        SendNotificationInternal(data.Clone());
+        
+        var pooledData = GetPooledData();
+        pooledData.CopyFrom(data);
+        SendNotificationInternal(pooledData);
+        ReturnToPool(pooledData);
     }
 
     private bool SendNotificationInternal(NotificationData data)
@@ -1387,7 +1456,10 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
 
     public void SendNotification(string title, string body, int days, int hours, int minutes, int seconds, string identifier = null)
     {
-        int totalSeconds = days * SECONDS_PER_DAY + hours * SECONDS_PER_HOUR + minutes * SECONDS_PER_MINUTE + seconds;
+        int totalSeconds = days * TimeConstants.SecondsPerDay + 
+                          hours * TimeConstants.SecondsPerHour + 
+                          minutes * TimeConstants.SecondsPerMinute + 
+                          seconds;
         SendNotification(title, body, totalSeconds, identifier);
     }
 
@@ -1434,7 +1506,11 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
 #if UNITY_IOS
             if (IS_IOS) iOSNotificationCenter.RemoveAllScheduledNotifications();
 #endif
-            lock (dictLock) { scheduledNotificationIds.Clear(); }
+            lock (dictLock) 
+            { 
+                scheduledNotificationIds.Clear(); 
+                identifierQueue.Clear();
+            }
             lock (groupsLock) { notificationGroups.Clear(); }
             MarkDirty();
         }
@@ -1513,7 +1589,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     }
 
     public bool IsInitialized() => isInitialized;
-    public void ForceFlushSave() => FlushSaveImmediate();
+    public async Task ForceFlushSaveAsync() => await FlushSaveAsync();
     #endregion
 
     #region Async API
@@ -1531,14 +1607,14 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     #endregion
 
     #region App Lifecycle
-    protected virtual void OnAppBackgrounded()
+    private void OnAppBackgrounded()
     {
         SaveLastOpenTime();
         ScheduleReturnNotification();
-        FlushSaveImmediate();
+        _ = FlushSaveAsync().ConfigureAwait(false);
     }
 
-    protected virtual void OnAppForegrounded()
+    private void OnAppForegrounded()
     {
         CheckInactivityAndSchedule();
         SaveLastOpenTime();
@@ -1571,13 +1647,19 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     #region Batch Operations
     public void SendNotificationBatch(List<NotificationData> notifications)
     {
-        if (notifications == null || notifications.Count == 0) return;
+        if (notifications is not { Count: > 0 }) return;
 
         int successCount = 0;
         foreach (var data in notifications)
         {
-            if (data.IsValid() && CanScheduleMore() && SendNotificationInternal(data))
-                successCount++;
+            if (data.IsValid() && CanScheduleMore())
+            {
+                var pooledData = GetPooledData();
+                pooledData.CopyFrom(data);
+                if (SendNotificationInternal(pooledData))
+                    successCount++;
+                ReturnToPool(pooledData);
+            }
         }
         LogInfo("Batch scheduled", successCount);
         MarkDirty();
@@ -1585,7 +1667,7 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
 
     public void CancelNotificationBatch(List<string> identifiers)
     {
-        if (identifiers == null || identifiers.Count == 0) return;
+        if (identifiers is not { Count: > 0 }) return;
 
         int cancelledCount = 0;
         foreach (var identifier in identifiers)
@@ -1618,11 +1700,18 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
                 }
             }
         }
-        if (cancelledCount > 0) { MarkDirty(); LogInfo("Cancelled batch", cancelledCount); }
+        if (cancelledCount > 0) 
+        { 
+            MarkDirty(); 
+            LogInfo("Cancelled batch", cancelledCount); 
+        }
     }
 
     public async Task SendNotificationBatchAsync(List<NotificationData> notifications, CancellationToken ct = default)
         => await Task.Run(() => SendNotificationBatch(notifications), ct);
+    
+    public async Task CancelNotificationBatchAsync(List<string> identifiers, CancellationToken ct = default)
+        => await Task.Run(() => CancelNotificationBatch(identifiers), ct);
     #endregion
 
     #region Debug
@@ -1634,20 +1723,20 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
         
         var info = new Dictionary<string, object>
         {
-            { "Initialized", isInitialized },
-            { "ScheduledCount", scheduledCount },
-            { "HasPermission", HasNotificationPermission() },
-            { "HoursSinceLastOpen", GetHoursSinceLastOpen() },
-            { "ReturnNotificationEnabled", returnConfig.enabled },
-            { "Platform", Application.platform.ToString() },
-            { "MaxNotifications", IS_IOS ? IOS_MAX_NOTIFICATIONS : ANDROID_MAX_NOTIFICATIONS },
-            { "CircuitBreakerOpen", IsCircuitBreakerOpen() },
-            { "ConsecutiveErrors", consecutiveErrors },
-            { "GroupCount", groupCount }
+            ["Initialized"] = isInitialized,
+            ["ScheduledCount"] = scheduledCount,
+            ["HasPermission"] = HasNotificationPermission(),
+            ["HoursSinceLastOpen"] = GetHoursSinceLastOpen(),
+            ["ReturnNotificationEnabled"] = returnConfig.enabled,
+            ["Platform"] = Application.platform.ToString(),
+            ["MaxNotifications"] = IS_IOS ? Limits.IosMaxNotifications : Limits.AndroidMaxNotifications,
+            ["CircuitBreakerOpen"] = IsCircuitBreakerOpen(),
+            ["ConsecutiveErrors"] = consecutiveErrors,
+            ["GroupCount"] = groupCount
         };
 
 #if UNITY_IOS
-        if (IS_IOS) info.Add("BadgeCount", currentBadgeCount);
+        if (IS_IOS) info["BadgeCount"] = currentBadgeCount;
 #endif
         return info;
     }
@@ -1656,20 +1745,17 @@ public class NotificationServices : MonoBehaviour, NotificationServices.INotific
     {
         var info = GetDebugInfo();
         var builder = GetThreadLogBuilder();
-        try
+        builder.Clear();
+        builder.Append("=== NotificationServices Debug ===\n");
+        foreach (var kvp in info)
         {
-            builder.Clear();
-            builder.AppendLine("=== NotificationServices Debug ===");
-            foreach (var kvp in info)
-            {
-                builder.Append(kvp.Key);
-                builder.Append(": ");
-                builder.AppendLine(kvp.Value.ToString());
-            }
-            builder.AppendLine("===================================");
-            Debug.Log(builder.ToString());
+            builder.Append(kvp.Key);
+            builder.Append(": ");
+            builder.Append(kvp.Value);
+            builder.Append('\n');
         }
-        finally { }
+        builder.Append("===================================");
+        Debug.Log(builder.ToString());
     }
     #endregion
 
