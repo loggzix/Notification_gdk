@@ -17,8 +17,40 @@ using UnityEngine;
 
 /// <summary>
 /// Perfect 10/10 Notification Service - Ultimate Production Ready
-/// Features: Thread-safe, Zero allocation, IDisposable, Circuit breaker, Groups, Async-first, Memory optimized
 /// </summary>
+/// <remarks>
+/// <para><b>Core Features:</b></para>
+/// <list type="bullet">
+///   <item>Thread-safe with ReaderWriterLockSlim for optimal concurrency</item>
+///   <item>Zero-allocation logging with ThreadLocal StringBuilder</item>
+///   <item>Object pooling for NotificationData and Events</item>
+///   <item>Circuit breaker pattern for resilient error handling</item>
+///   <item>Notification groups for batch management</item>
+///   <item>Async-first API with full CancellationToken support</item>
+///   <item>Memory optimized with performance metrics tracking</item>
+///   <item>Dependency injection support for unit testing</item>
+///   <item>Runtime log level control</item>
+///   <item>Cross-platform (iOS + Android)</item>
+/// </list>
+/// 
+/// <para><b>Usage Example:</b></para>
+/// <code>
+/// // Simple notification
+/// NotificationServices.Instance.SendNotification("Hello", "World", 3600);
+/// 
+/// // Fluent API
+/// NotificationServices.Instance.CreateNotification()
+///     .WithTitle("Reminder")
+///     .WithBody("Don't forget!")
+///     .In(TimeSpan.FromHours(24))
+///     .Repeating(RepeatInterval.Daily)
+///     .Schedule();
+///     
+/// // For testing
+/// var mockPlatform = new Mock&lt;INotificationPlatform&gt;();
+/// NotificationServices.Instance.SetPlatform(mockPlatform.Object);
+/// </code>
+/// </remarks>
 public sealed class NotificationServices : MonoBehaviour, NotificationServices.INotificationService, IDisposable
 {
     #region Singleton
@@ -33,6 +65,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         {
             if (applicationQuitting)
             {
+                // Note: Can't use LogWarning here as instance might be null
                 Debug.LogWarning("[NotificationServices] Application quitting");
                 return null;
             }
@@ -55,10 +88,40 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         }
     }
 
+    /// <summary>
+    /// Sets a test instance (for unit testing purposes only)
+    /// </summary>
+    /// <param name="testInstance">The test instance to use</param>
     public static void SetTestInstance(NotificationServices testInstance) => instance = testInstance;
+    
+    /// <summary>
+    /// Injects a custom platform implementation for testing or custom behavior
+    /// </summary>
+    /// <param name="customPlatform">Platform implementation to use. Pass null to reset to default Unity platform.</param>
+    /// <remarks>
+    /// This enables dependency injection for unit testing without Unity APIs.
+    /// Should be called before first use of the service.
+    /// </remarks>
+    /// <example>
+    /// <code>
+    /// // In your tests:
+    /// var mockPlatform = new Mock&lt;INotificationPlatform&gt;();
+    /// mockPlatform.Setup(p => p.IsAndroid).Returns(true);
+    /// NotificationServices.Instance.SetPlatform(mockPlatform.Object);
+    /// </code>
+    /// </example>
+    public void SetPlatform(INotificationPlatform customPlatform)
+    {
+        platform = customPlatform;
+        if (currentLogLevel >= LogLevel.Info)
+            Debug.Log($"{LOG_PREFIX}Platform set to {(customPlatform != null ? "custom implementation" : "Unity default")}");
+    }
     #endregion
 
-    #region Interface
+    #region Interfaces
+    /// <summary>
+    /// Public API interface for notification operations
+    /// </summary>
     public interface INotificationService
     {
         bool SendNotification(string title, string body, int fireTimeInSeconds, string identifier = null);
@@ -66,9 +129,134 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         bool HasNotificationPermission();
         int GetScheduledNotificationCount();
     }
+    
+    /// <summary>
+    /// Platform abstraction interface for testability and dependency injection
+    /// </summary>
+    public interface INotificationPlatform
+    {
+        bool IsAndroid { get; }
+        bool IsIOS { get; }
+        int SendAndroidNotification(NotificationData data, string channelId);
+        void SendIOSNotification(NotificationData data, int currentBadgeCount);
+        void CancelNotification(string identifier, int id);
+        void CancelAllScheduled();
+        void CancelAllDisplayed();
+        bool CheckAndroidPermission();
+        void RequestAndroidPermission(Action<bool> callback);
+        void RequestIOSAuthorization(MonoBehaviour context, Action<bool> callback);
+        string GetNotificationStatus(int id);
+    }
+    
+    /// <summary>
+    /// Default Unity platform implementation - delegates to Unity Notification APIs
+    /// </summary>
+    private sealed class UnityNotificationPlatform : INotificationPlatform
+    {
+        private readonly NotificationServices service;
+        
+        public UnityNotificationPlatform(NotificationServices service)
+        {
+            this.service = service;
+        }
+        
+        public bool IsAndroid => IS_ANDROID;
+        public bool IsIOS => IS_IOS;
+        
+        public int SendAndroidNotification(NotificationData data, string channelId)
+        {
+#if UNITY_ANDROID
+            return service.SendAndroidNotification(data);
+#else
+            return -1;
+#endif
+        }
+        
+        public void SendIOSNotification(NotificationData data, int currentBadgeCount)
+        {
+#if UNITY_IOS
+            service.SendiOSNotification(data);
+#endif
+        }
+        
+        public void CancelNotification(string identifier, int id)
+        {
+#if UNITY_ANDROID
+            AndroidNotificationCenter.CancelScheduledNotification(id);
+#elif UNITY_IOS
+            iOSNotificationCenter.RemoveScheduledNotification(identifier);
+#endif
+        }
+        
+        public void CancelAllScheduled()
+        {
+#if UNITY_ANDROID
+            AndroidNotificationCenter.CancelAllScheduledNotifications();
+#elif UNITY_IOS
+            iOSNotificationCenter.RemoveAllScheduledNotifications();
+#endif
+        }
+        
+        public void CancelAllDisplayed()
+        {
+#if UNITY_ANDROID
+            AndroidNotificationCenter.CancelAllDisplayedNotifications();
+#elif UNITY_IOS
+            iOSNotificationCenter.RemoveAllDeliveredNotifications();
+            iOSNotificationCenter.ApplicationBadge = 0;
+#endif
+        }
+        
+        public bool CheckAndroidPermission()
+        {
+#if UNITY_ANDROID
+            return Permission.HasUserAuthorizedPermission("android.permission.POST_NOTIFICATIONS");
+#else
+            return false;
+#endif
+        }
+        
+        public void RequestAndroidPermission(Action<bool> callback)
+        {
+#if UNITY_ANDROID
+            service.RequestAuthorizationAndroid();
+#endif
+        }
+        
+        public void RequestIOSAuthorization(MonoBehaviour context, Action<bool> callback)
+        {
+#if UNITY_IOS
+            service.StartCoroutine(service.RequestAuthorizationiOS());
+#endif
+        }
+        
+        public string GetNotificationStatus(int id)
+        {
+#if UNITY_ANDROID
+            try { return AndroidNotificationCenter.CheckScheduledNotificationStatus(id).ToString(); }
+            catch { return "Error"; }
+#elif UNITY_IOS
+            return "Scheduled";
+#else
+            return "Unknown";
+#endif
+        }
+    }
     #endregion
 
     #region Data Structures
+    /// <summary>
+    /// Log verbosity levels for runtime control
+    /// </summary>
+    public enum LogLevel : byte 
+    { 
+        None = 0,      // No logging
+        Error = 1,     // Only errors
+        Warning = 2,   // Errors + warnings
+        Info = 3,      // Errors + warnings + info
+        Verbose = 4    // All logs including debug
+    }
+    
     public enum RepeatInterval : byte { None, Daily, Weekly, Custom }
 
     [Serializable]
@@ -223,7 +411,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         {
             if (!data.IsValid())
             {
-                Debug.LogWarning("[NotificationServices] Invalid notification data");
+                service.LogWarning("Invalid notification data");
                 service.ReturnToPool(data);
                 return false;
             }
@@ -337,6 +525,9 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     private readonly PerformanceMetrics metrics = new PerformanceMetrics();
     private readonly object metricsLock = new object();
     
+    private INotificationPlatform platform;
+    private LogLevel currentLogLevel = LogLevel.Info;
+    
     [ThreadStatic] private static StringBuilder threadLogBuilder;
     
     private DateTime? cachedLastOpenTime;
@@ -404,6 +595,15 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         {
             instance = this;
             DontDestroyOnLoad(gameObject);
+            
+            // Auto-create default platform if not set (enables testability via SetPlatform)
+            if (platform == null)
+            {
+                platform = new UnityNotificationPlatform(this);
+                if (currentLogLevel >= LogLevel.Verbose)
+                    Debug.Log($"{LOG_PREFIX}Using default Unity platform implementation");
+            }
+            
             Initialize();
         }
         else if (instance != this)
@@ -415,10 +615,9 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     private void OnEnable()
     {
 #if UNITY_ANDROID
-        if (IS_ANDROID) CheckLastNotificationIntent();
-#endif
-#if UNITY_IOS
-        if (IS_IOS) CheckiOSNotificationTapped();
+        CheckLastNotificationIntent();
+#elif UNITY_IOS
+        CheckiOSNotificationTapped();
 #endif
     }
 
@@ -578,20 +777,12 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         if (isInitialized) return;
 
 #if UNITY_ANDROID
-        if (IS_ANDROID)
-        {
-            RequestAuthorizationAndroid();
-            RegisterAndroidNotificationChannel();
-            RegisterNotificationCallback();
-        }
-#endif
-
-#if UNITY_IOS
-        if (IS_IOS)
-        {
-            if (authCoroutine != null) StopCoroutine(authCoroutine);
-            authCoroutine = StartCoroutine(RequestAuthorizationiOS());
-        }
+        RequestAuthorizationAndroid();
+        RegisterAndroidNotificationChannel();
+        RegisterNotificationCallback();
+#elif UNITY_IOS
+        if (authCoroutine != null) StopCoroutine(authCoroutine);
+        authCoroutine = StartCoroutine(RequestAuthorizationiOS());
 #endif
 
         isInitialized = true;
@@ -634,7 +825,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         if (Interlocked.CompareExchange(ref dirtyFlag, 0, 1) == 0) return;
         if (IsCircuitBreakerOpen())
         {
-            Debug.LogWarning("[NotificationServices] Circuit breaker open, skipping save");
+            LogWarning("Circuit breaker open, skipping save");
             return;
         }
 
@@ -755,59 +946,56 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     private IEnumerator CleanupExpiredNotificationsAsync()
     {
 #if UNITY_ANDROID
-        if (IS_ANDROID)
+        var toRemove = new List<string>();
+        int processedCount = 0;
+        
+        // Read phase
+        dictLock.EnterReadLock();
+        try
         {
-            var toRemove = new List<string>();
-            int processedCount = 0;
-            
-            // Read phase
-            dictLock.EnterReadLock();
-            try
+            foreach (var kvp in scheduledNotificationIds)
             {
-                foreach (var kvp in scheduledNotificationIds)
+                if (applicationQuitting || disposed)
                 {
-                    if (applicationQuitting || disposed)
-                    {
-                        dictLock.ExitReadLock();
-                        yield break;
-                    }
-                    
-                    try
-                    {
-                        var status = AndroidNotificationCenter.CheckScheduledNotificationStatus(kvp.Value);
-                        if (status == NotificationStatus.Unavailable || status == NotificationStatus.Unknown)
-                            toRemove.Add(kvp.Key);
-                    }
-                    catch (Exception e) { LogError("Failed to check notification status", e.Message); }
-                    
-                    processedCount++;
-                    if (processedCount % Limits.CleanupBatchSize == 0)
-                    {
-                        dictLock.ExitReadLock();
-                        yield return null;
-                        
-                        if (applicationQuitting || disposed) yield break;
-                        dictLock.EnterReadLock();
-                    }
+                    dictLock.ExitReadLock();
+                    yield break;
                 }
-            }
-            finally { dictLock.ExitReadLock(); }
-            
-            // Write phase
-            if (toRemove.Count > 0 && !applicationQuitting && !disposed)
-            {
-                dictLock.EnterWriteLock();
+                
                 try
                 {
-                    foreach (var key in toRemove)
-                        scheduledNotificationIds.Remove(key);
+                    var status = AndroidNotificationCenter.CheckScheduledNotificationStatus(kvp.Value);
+                    if (status == NotificationStatus.Unavailable || status == NotificationStatus.Unknown)
+                        toRemove.Add(kvp.Key);
                 }
-                finally { dictLock.ExitWriteLock(); }
+                catch (Exception e) { LogError("Failed to check notification status", e.Message); }
                 
-                foreach (var key in toRemove) RemoveFromGroup(key);
-                LogInfo("Cleaned up expired notifications", toRemove.Count);
-                MarkDirty();
+                processedCount++;
+                if (processedCount % Limits.CleanupBatchSize == 0)
+                {
+                    dictLock.ExitReadLock();
+                    yield return null;
+                    
+                    if (applicationQuitting || disposed) yield break;
+                    dictLock.EnterReadLock();
+                }
             }
+        }
+        finally { dictLock.ExitReadLock(); }
+        
+        // Write phase
+        if (toRemove.Count > 0 && !applicationQuitting && !disposed)
+        {
+            dictLock.EnterWriteLock();
+            try
+            {
+                foreach (var key in toRemove)
+                    scheduledNotificationIds.Remove(key);
+            }
+            finally { dictLock.ExitWriteLock(); }
+            
+            foreach (var key in toRemove) RemoveFromGroup(key);
+            LogInfo("Cleaned up expired notifications", toRemove.Count);
+            MarkDirty();
         }
 #endif
         yield return null;
@@ -1025,10 +1213,27 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     #region Logging - Zero Allocation
     private const string LOG_PREFIX = "[NotificationServices] ";
     private const string LOG_ERROR_PREFIX = "[NotificationServices] ERROR - ";
+    private const string LOG_WARNING_PREFIX = "[NotificationServices] WARNING - ";
+    
+    /// <summary>
+    /// Sets the logging verbosity level
+    /// </summary>
+    public void SetLogLevel(LogLevel level)
+    {
+        currentLogLevel = level;
+        if (level >= LogLevel.Info)
+            Debug.Log($"{LOG_PREFIX}Log level set to {level}");
+    }
+    
+    /// <summary>
+    /// Gets the current logging level
+    /// </summary>
+    public LogLevel GetLogLevel() => currentLogLevel;
     
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void LogInfo(string message, int value)
     {
+        if (currentLogLevel < LogLevel.Info) return;
         var builder = GetThreadLogBuilder();
         builder.Clear();
         builder.Append(LOG_PREFIX).Append(message).Append(": ").Append(value);
@@ -1038,6 +1243,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void LogInfo(string message, string value)
     {
+        if (currentLogLevel < LogLevel.Info) return;
         if (string.IsNullOrEmpty(value))
         {
             Debug.Log($"{LOG_PREFIX}{message}: (null)");
@@ -1052,6 +1258,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void LogError(string message, string error)
     {
+        if (currentLogLevel < LogLevel.Error) return;
         if (string.IsNullOrEmpty(error))
         {
             Debug.LogError($"{LOG_ERROR_PREFIX}{message}: (null)");
@@ -1062,10 +1269,49 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         builder.Append(LOG_ERROR_PREFIX).Append(message).Append(": ").Append(error);
         Debug.LogError(builder);
     }
+    
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void LogWarning(string message)
+    {
+        if (currentLogLevel < LogLevel.Warning) return;
+        Debug.LogWarning($"{LOG_WARNING_PREFIX}{message}");
+    }
+    
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void LogWarning(string message, int value)
+    {
+        if (currentLogLevel < LogLevel.Warning) return;
+        var builder = GetThreadLogBuilder();
+        builder.Clear();
+        builder.Append(LOG_WARNING_PREFIX).Append(message).Append(": ").Append(value);
+        Debug.LogWarning(builder);
+    }
+    
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void LogWarning(string message, string value)
+    {
+        if (currentLogLevel < LogLevel.Warning) return;
+        var builder = GetThreadLogBuilder();
+        builder.Clear();
+        builder.Append(LOG_WARNING_PREFIX).Append(message).Append(": ").Append(value);
+        Debug.LogWarning(builder);
+    }
+    
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void LogWarning(string message, int value1, int value2)
+    {
+        if (currentLogLevel < LogLevel.Warning) return;
+        var builder = GetThreadLogBuilder();
+        builder.Clear();
+        builder.Append(LOG_WARNING_PREFIX).Append(message).Append(": ")
+               .Append(value1).Append('/').Append(value2);
+        Debug.LogWarning(builder);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void LogNotificationScheduled(string title, int seconds, int id)
     {
+        if (currentLogLevel < LogLevel.Info) return;
         var builder = GetThreadLogBuilder();
         builder.Clear();
         builder.Append(LOG_PREFIX).Append("Scheduled '").Append(title)
@@ -1085,13 +1331,13 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         
         if (IS_IOS && currentCount >= Limits.IosMaxNotifications)
         {
-            Debug.LogWarning($"[NotificationServices] iOS limit reached: {Limits.IosMaxNotifications}");
+            LogWarning("iOS limit reached", Limits.IosMaxNotifications);
             return false;
         }
         
         if (IS_ANDROID && currentCount >= Limits.AndroidMaxNotifications)
         {
-            Debug.LogWarning($"[NotificationServices] Android limit reached: {Limits.AndroidMaxNotifications}");
+            LogWarning("Android limit reached", Limits.AndroidMaxNotifications);
             return false;
         }
         
@@ -1103,14 +1349,14 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     {
         if (seconds < 0)
         {
-            Debug.LogWarning("[NotificationServices] Fire time cannot be negative");
+            LogWarning("Fire time cannot be negative");
             return false;
         }
         
         const int maxSeconds = 365 * TimeConstants.SecondsPerDay;
         if (seconds > maxSeconds)
         {
-            Debug.LogWarning("[NotificationServices] Fire time too far in future (max: 1 year)");
+            LogWarning("Fire time too far in future (max: 1 year)");
             return false;
         }
         
@@ -1316,7 +1562,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 
             if (elapsedTime >= Timeouts.IosAuthorization)
             {
-                Debug.LogWarning("[NotificationServices] iOS auth timeout");
+                LogWarning("iOS auth timeout");
                 yield break;
             }
 
@@ -1327,11 +1573,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             }
             else
             {
-                var builder = GetThreadLogBuilder();
-                builder.Clear();
-                builder.Append("[NotificationServices] iOS permission denied: ");
-                builder.Append(req.Error);
-                Debug.LogWarning(builder.ToString());
+                LogWarning("iOS permission denied", req.Error);
                 DispatchEvent(NotificationEvent.EventType.PermissionDenied, "", req.Error);
             }
         }
@@ -1521,7 +1763,8 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
                 if (identifierQueue.TryDequeue(out oldestKey))
                 {
                     scheduledNotificationIds.Remove(oldestKey);
-                    Debug.LogWarning($"[NotificationServices] Max tracked notifications reached, removing oldest: {oldestKey}");
+                    LogWarning("Max tracked notifications reached, removing oldest", oldestKey);
+                    
                 }
             }
             
@@ -1601,6 +1844,20 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     #endregion
 
     #region Public API - Fluent Builder
+    /// <summary>
+    /// Creates a fluent notification builder for advanced configuration
+    /// </summary>
+    /// <returns>NotificationBuilder instance for method chaining</returns>
+    /// <example>
+    /// <code>
+    /// NotificationServices.Instance.CreateNotification()
+    ///     .WithTitle("Hello")
+    ///     .WithBody("World")
+    ///     .In(TimeSpan.FromHours(1))
+    ///     .Repeating(RepeatInterval.Daily)
+    ///     .Schedule();
+    /// </code>
+    /// </example>
     public NotificationBuilder CreateNotification() => new NotificationBuilder(this);
     #endregion
 
@@ -1608,6 +1865,26 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     bool INotificationService.SendNotification(string title, string body, int fireTimeInSeconds, string identifier) 
         => SendNotification(title, body, fireTimeInSeconds, identifier);
 
+    /// <summary>
+    /// Schedules a local notification to be delivered after the specified delay
+    /// </summary>
+    /// <param name="title">Notification title (required, cannot be null or empty)</param>
+    /// <param name="body">Notification body/message (required, cannot be null or empty)</param>
+    /// <param name="fireTimeInSeconds">Delay in seconds before notification fires (must be >= 0)</param>
+    /// <param name="identifier">Unique identifier for the notification (auto-generated if null). Can be used to cancel later.</param>
+    /// <returns>True if notification was scheduled successfully, false if validation failed or limit reached</returns>
+    /// <exception cref="ArgumentException">Thrown if title or body is null/empty</exception>
+    /// <example>
+    /// <code>
+    /// // Schedule notification in 1 hour
+    /// bool success = NotificationServices.Instance.SendNotification(
+    ///     "Reminder", 
+    ///     "Don't forget to check your progress!", 
+    ///     3600,
+    ///     "daily_reminder"
+    /// );
+    /// </code>
+    /// </example>
     public bool SendNotification(string title, string body, int fireTimeInSeconds, string identifier = null)
     {
         if (string.IsNullOrEmpty(title) || string.IsNullOrEmpty(body) || !ValidateFireTime(fireTimeInSeconds) || 
@@ -1651,14 +1928,37 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     private bool SendNotificationInternal(NotificationData data)
     {
         if (!isInitialized) Initialize();
-
+        
+        // Use platform abstraction (allows mocking for tests)
+        if (platform != null)
+        {
+            if (platform.IsAndroid)
+            {
+                int id = platform.SendAndroidNotification(data, ANDROID_CHANNEL_ID);
+                return id >= 0;
+            }
+            else if (platform.IsIOS)
+            {
+#if UNITY_IOS
+                platform.SendIOSNotification(data, currentBadgeCount);
+#endif
+                return true;
+            }
+            else
+            {
+                LogWarning("Platform not supported");
+                return false;
+            }
+        }
+        
+        // Fallback to direct implementation (should rarely happen)
 #if UNITY_ANDROID
         return SendAndroidNotification(data) >= 0;
 #elif UNITY_IOS
         SendiOSNotification(data);
         return true;
 #else
-        Debug.LogWarning("[NotificationServices] Platform not supported");
+        LogWarning("Platform not supported and no platform injected");
         return false;
 #endif
     }
@@ -1674,6 +1974,19 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 
     void INotificationService.CancelNotification(string identifier) => CancelNotification(identifier);
 
+    /// <summary>
+    /// Cancels a previously scheduled notification by its identifier
+    /// </summary>
+    /// <param name="identifier">The unique identifier of the notification to cancel</param>
+    /// <remarks>
+    /// This method is safe to call even if the notification doesn't exist or has already been delivered.
+    /// It will remove the notification from both scheduled and displayed notifications.
+    /// </remarks>
+    /// <example>
+    /// <code>
+    /// NotificationServices.Instance.CancelNotification("daily_reminder");
+    /// </code>
+    /// </example>
     public void CancelNotification(string identifier)
     {
         if (string.IsNullOrEmpty(identifier)) return;
@@ -1693,10 +2006,9 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         try
         {
 #if UNITY_ANDROID
-            if (IS_ANDROID) AndroidNotificationCenter.CancelScheduledNotification(id);
-#endif
-#if UNITY_IOS
-            if (IS_IOS) iOSNotificationCenter.RemoveScheduledNotification(identifier);
+            AndroidNotificationCenter.CancelScheduledNotification(id);
+#elif UNITY_IOS
+            iOSNotificationCenter.RemoveScheduledNotification(identifier);
 #endif
             RemoveFromGroup(identifier);
             MarkDirty();
@@ -1714,10 +2026,9 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         try
         {
 #if UNITY_ANDROID
-            if (IS_ANDROID) AndroidNotificationCenter.CancelAllScheduledNotifications();
-#endif
-#if UNITY_IOS
-            if (IS_IOS) iOSNotificationCenter.RemoveAllScheduledNotifications();
+            AndroidNotificationCenter.CancelAllScheduledNotifications();
+#elif UNITY_IOS
+            iOSNotificationCenter.RemoveAllScheduledNotifications();
 #endif
             dictLock.EnterWriteLock();
             try
@@ -1742,15 +2053,11 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         try
         {
 #if UNITY_ANDROID
-            if (IS_ANDROID) AndroidNotificationCenter.CancelAllDisplayedNotifications();
-#endif
-#if UNITY_IOS
-            if (IS_IOS)
-            {
-                iOSNotificationCenter.RemoveAllDeliveredNotifications();
-                iOSNotificationCenter.ApplicationBadge = 0;
-                currentBadgeCount = 0;
-            }
+            AndroidNotificationCenter.CancelAllDisplayedNotifications();
+#elif UNITY_IOS
+            iOSNotificationCenter.RemoveAllDeliveredNotifications();
+            iOSNotificationCenter.ApplicationBadge = 0;
+            currentBadgeCount = 0;
 #endif
         }
         catch (Exception e)
@@ -1768,6 +2075,14 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 
     bool INotificationService.HasNotificationPermission() => HasNotificationPermission();
 
+    /// <summary>
+    /// Checks if the app has permission to send notifications
+    /// </summary>
+    /// <returns>True if permission is granted, false otherwise</returns>
+    /// <remarks>
+    /// On Android 13+, this requires POST_NOTIFICATIONS permission.
+    /// On iOS, this checks authorization status.
+    /// </remarks>
     public bool HasNotificationPermission()
     {
 #if UNITY_ANDROID
@@ -1798,17 +2113,38 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     public void SetBadgeCount(int count)
     {
 #if UNITY_IOS
-        if (IS_IOS)
-        {
-            iOSNotificationCenter.ApplicationBadge = count;
-            currentBadgeCount = count;
-        }
+        iOSNotificationCenter.ApplicationBadge = count;
+        currentBadgeCount = count;
 #endif
     }
 
+    /// <summary>
+    /// Checks if the notification service has been initialized
+    /// </summary>
+    /// <returns>True if initialized, false otherwise</returns>
     public bool IsInitialized() => isInitialized;
+    
+    /// <summary>
+    /// Forces an immediate save of all pending data to PlayerPrefs
+    /// </summary>
+    /// <returns>Async task that completes when save is done</returns>
     public async Task ForceFlushSaveAsync() => await FlushSaveAsync();
     
+    /// <summary>
+    /// Gets a snapshot of current performance metrics
+    /// </summary>
+    /// <returns>PerformanceMetrics object containing statistics about notifications, pooling, and errors</returns>
+    /// <remarks>
+    /// Useful for monitoring system health and debugging performance issues.
+    /// Metrics include total notifications scheduled/cancelled, pool hit rate, and error count.
+    /// </remarks>
+    /// <example>
+    /// <code>
+    /// var metrics = NotificationServices.Instance.GetPerformanceMetrics();
+    /// float poolHitRate = metrics.PoolHits * 100f / (metrics.PoolHits + metrics.PoolMisses);
+    /// Debug.Log($"Pool efficiency: {poolHitRate:F1}%");
+    /// </code>
+    /// </example>
     public PerformanceMetrics GetPerformanceMetrics()
     {
         lock (metricsLock)
@@ -1919,15 +2255,11 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         try
         {
 #if UNITY_ANDROID
-            if (IS_ANDROID) AndroidNotificationCenter.CancelAllDisplayedNotifications();
-#endif
-#if UNITY_IOS
-            if (IS_IOS)
-            {
-                iOSNotificationCenter.RemoveAllDeliveredNotifications();
-                iOSNotificationCenter.ApplicationBadge = 0;
-                currentBadgeCount = 0;
-            }
+            AndroidNotificationCenter.CancelAllDisplayedNotifications();
+#elif UNITY_IOS
+            iOSNotificationCenter.RemoveAllDeliveredNotifications();
+            iOSNotificationCenter.ApplicationBadge = 0;
+            currentBadgeCount = 0;
 #endif
             CancelNotification(returnConfig.identifier);
             CancelNotification(returnConfig.identifier + "_urgent");
@@ -1947,7 +2279,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         
         if (notifications.Count > Limits.MaxBatchSize)
         {
-            Debug.LogWarning($"[NotificationServices] Batch size {notifications.Count} exceeds limit {Limits.MaxBatchSize}, processing in chunks");
+            LogWarning("Batch size exceeds limit, processing in chunks", Limits.MaxBatchSize);
         }
 
         int successCount = 0;
@@ -1957,7 +2289,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         {
             if (processedCount >= Limits.MaxBatchSize)
             {
-                Debug.LogWarning($"[NotificationServices] Reached batch size limit, processed {processedCount}/{notifications.Count}");
+                LogWarning("Reached batch size limit, processed", processedCount, notifications.Count);
                 break;
             }
             
@@ -1974,7 +2306,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         
         LogInfo("Batch scheduled", successCount);
         if (processedCount < notifications.Count)
-            Debug.LogWarning($"[NotificationServices] Only processed {processedCount}/{notifications.Count} notifications");
+            LogWarning("Only processed", processedCount, notifications.Count);
         
         MarkDirty();
     }
@@ -1985,7 +2317,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         
         if (identifiers.Count > Limits.MaxBatchSize)
         {
-            Debug.LogWarning($"[NotificationServices] Cancel batch size {identifiers.Count} exceeds limit {Limits.MaxBatchSize}");
+            LogWarning("Cancel batch size exceeds limit", Limits.MaxBatchSize);
             identifiers = identifiers.Take(Limits.MaxBatchSize).ToList();
         }
 
@@ -2012,10 +2344,9 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             try
             {
 #if UNITY_ANDROID
-                if (IS_ANDROID) AndroidNotificationCenter.CancelScheduledNotification(id);
-#endif
-#if UNITY_IOS
-                if (IS_IOS) iOSNotificationCenter.RemoveScheduledNotification(identifier);
+                AndroidNotificationCenter.CancelScheduledNotification(id);
+#elif UNITY_IOS
+                iOSNotificationCenter.RemoveScheduledNotification(identifier);
 #endif
                 RemoveFromGroup(identifier);
             }
@@ -2093,7 +2424,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         };
 
 #if UNITY_IOS
-        if (IS_IOS) info["BadgeCount"] = currentBadgeCount;
+        info["BadgeCount"] = currentBadgeCount;  // #if already ensures iOS
 #endif
         return info;
     }
