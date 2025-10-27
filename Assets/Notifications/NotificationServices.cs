@@ -59,11 +59,35 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     private static readonly object lockObject = new object();
     private static volatile int initializationState = 0; // 0=none, 1=initializing, 2=done
     private static volatile bool applicationQuitting = false;
+    private static int mainThreadId;
+    private static bool autoInitialized = false;
+
+    /// <summary>
+    /// Bootstrap method to auto-initialize on main thread before scene load
+    /// </summary>
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+    static void BootstrapNotificationServices()
+    {
+        if (autoInitialized) return;
+        autoInitialized = true;
+        mainThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+        
+        // Auto-create instance on main thread before any scene loads
+        if (instance == null)
+        {
+            var go = new GameObject("[NotificationServices]");
+            instance = go.AddComponent<NotificationServices>();
+            DontDestroyOnLoad(go);
+            initializationState = 2;
+            
+            Debug.Log("[NotificationServices] Auto-initialized via RuntimeInitializeOnLoadMethod");
+        }
+    }
 
     /// <summary>
     /// Singleton instance getter. Thread-safe with double-checked locking.
-    /// WARNING: GameObject creation must happen on main thread.
-    /// If called from background thread, use with caution or call from main thread context.
+    /// Thread safety: Bootstrap creates instance on main thread before scene load.
+    /// If accessed from background thread before bootstrap, throws InvalidOperationException.
     /// </summary>
     public static NotificationServices Instance
     {
@@ -71,6 +95,23 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         {
             // Fast path: instance already exists
             if (instance != null) return instance;
+            
+            // ✅ SAFETY CHECK: Block access if not yet initialized via Bootstrap
+            if (!autoInitialized || mainThreadId == 0)
+            {
+                throw new InvalidOperationException(
+                    "NotificationServices not initialized yet. " +
+                    "Access after RuntimeInitializeOnLoadMethod/Bootstrap to complete. " +
+                    "Called too early or bootstrap failed.");
+            }
+            
+            // ✅ SAFETY CHECK: Ensure called from main thread
+            if (System.Threading.Thread.CurrentThread.ManagedThreadId != mainThreadId)
+            {
+                throw new InvalidOperationException(
+                    "NotificationServices.Instance must be accessed from main thread. " +
+                    "Wait for scene load or call from main thread context.");
+            }
             
             // Slow path: need to create instance with proper synchronization
             lock (lockObject)
@@ -82,11 +123,9 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
                 return null;
             }
 
-                // Double-checked locking pattern
+                // Double-checked locking pattern (legacy path if Bootstrap didn't create)
                 // NOTE: GameObject creation here MUST be on main thread (Unity requirement)
-                // This can cause issues if Instance is accessed from background threads
-                // Recommended: Initialize via Awake/Startup or call from main thread context
-            if (instance == null && initializationState == 0)
+                if (instance == null && initializationState == 0)
                     {
                         initializationState = 1;
                         var obj = new GameObject("NotificationServices");
@@ -351,6 +390,8 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     {
         public List<SerializedNotification> Notifications = new List<SerializedNotification>();
         public uint Crc32;
+        public ReturnNotificationConfig ReturnConfig;
+        public long LastOpenUnixTime; // Unix timestamp for atomic file persistence
     }
 
     [Serializable]
@@ -700,7 +741,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     
     private DateTime? cachedLastOpenTime;
     private double cachedHoursSinceOpen; // Safe: always accessed inside lock(cacheLock)
-    private float lastCacheTime; // Safe: always accessed inside lock(cacheLock)
+    private long lastCacheTicks; // Monotonic clock ticks (Time.time không đáng tin khi pause) - Safe: always accessed inside lock(cacheLock)
     private readonly object cacheLock = new object();
     
     private event Action<NotificationEvent> _onNotificationEvent;
@@ -836,9 +877,8 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             {
                 try
                 {
-                    SaveScheduledIds();
-                    SaveReturnConfig();
-                    PlayerPrefs.Save();
+                    SaveScheduledIds(); // Saves all data to atomic file
+                    // NO PlayerPrefs.Save() - removed for non-blocking I/O
                 }
                 catch (Exception e)
                 {
@@ -908,9 +948,8 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             {
                 try
                 {
-                    SaveScheduledIds();
-                    SaveReturnConfig();
-                    PlayerPrefs.Save();
+                    SaveScheduledIds(); // Saves all data to atomic file
+                    // NO PlayerPrefs.Save() - removed for non-blocking I/O
                 }
                 catch (Exception e)
                 {
@@ -937,6 +976,14 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     #region Unity Lifecycle
     private void Awake()
     {
+        // If auto-initialized via bootstrap, skip initialization
+        if (autoInitialized && initializationState == 2)
+        {
+            if (instance != this)
+                Destroy(gameObject);
+            return;
+        }
+        
         if (instance == null)
         {
             instance = this;
@@ -962,8 +1009,18 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     {
 #if UNITY_ANDROID
         CheckLastNotificationIntent();
+        // Re-subscribe to Android notification events
+        AndroidNotificationCenter.OnNotificationReceived += OnNotificationReceived;
 #elif UNITY_IOS
         CheckiOSNotificationTapped();
+#endif
+    }
+
+    private void OnDisable()
+    {
+#if UNITY_ANDROID
+        // Unsubscribe to prevent memory leaks
+        AndroidNotificationCenter.OnNotificationReceived -= OnNotificationReceived;
 #endif
     }
 
@@ -987,16 +1044,15 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         // Unity may kill process before async tasks complete
         if (Interlocked.CompareExchange(ref dirtyFlag, 0, 1) == 1 && isInitialized)
         {
-            try
-            {
-                SaveScheduledIds();
-                SaveReturnConfig();
-                PlayerPrefs.Save();
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"[NotificationServices] Critical save on quit failed: {e.Message}");
-            }
+                try
+                {
+                    SaveScheduledIds(); // Saves ReturnConfig + LastOpenTime + notifications to atomic file
+                    // NO PlayerPrefs.Save() - using atomic file persistence only
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"[NotificationServices] Critical save on quit failed: {e.Message}");
+                }
         }
         
         DisposeStaticResources();
@@ -1216,8 +1272,8 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 
         try
         {
-            LoadScheduledIds();
-            LoadReturnConfig();
+            LoadScheduledIds(); // Loads notifications + ReturnConfig + LastOpenTime from atomic file
+            // LoadReturnConfig(); // REMOVED - ReturnConfig loaded in LoadScheduledIds() to avoid override
             InitializeNotificationServices();
             StartMetricsFlushLoop();
             RecordSuccess();
@@ -1347,28 +1403,9 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         {
             try
             {
-                SaveScheduledIds();
-                SaveReturnConfig();
-
-                for (int i = 0; i < RetryConfig.SaveAttempts; i++)
-                {
-                    try
-                    {
-                        PlayerPrefs.Save();
-                        RecordSuccess();
-                        tcs.TrySetResult(true);
-                        return;
-                    }
-                    catch (Exception e)
-                    {
-                        LogError($"PlayerPrefs.Save failed, attempt {i + 1}", e.Message);
-                        if (i >= RetryConfig.SaveAttempts - 1)
-                        {
-                            RecordError("FlushSave", e);
-                            tcs.TrySetException(e);
-                        }
-                    }
-                }
+                SaveScheduledIds(); // Saves all data (notifications + ReturnConfig + LastOpenTime) to atomic file
+                RecordSuccess();
+                tcs.TrySetResult(true);
             }
             catch (Exception ex)
             {
@@ -1409,8 +1446,22 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             try { snapshot = scheduledNotificationIds.ToList(); }
             finally { dictLock.ExitReadLock(); }
             
-            // Build store with notifications
-            var store = new NotificationStore();
+            // Build store with notifications + ReturnConfig + LastOpenTime
+            var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            
+            // Get LastOpenTime from cache (set by SaveLastOpenTime() or loaded from file)
+            DateTime lastOpenTime;
+            lock (cacheLock)
+            {
+                lastOpenTime = cachedLastOpenTime ?? DateTime.UtcNow;
+            }
+            
+            var store = new NotificationStore
+            {
+                ReturnConfig = returnConfig ?? new ReturnNotificationConfig(),
+                LastOpenUnixTime = (long)(lastOpenTime - epoch).TotalSeconds
+            };
+            
             foreach (var kvp in snapshot)
             {
                 store.Notifications.Add(new SerializedNotification
@@ -1420,8 +1471,15 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
                 });
             }
             
+            // NO PlayerPrefs - LastOpenTime comes from cache/file
+            
             // Serialize to JSON without CRC32 first
-            var tempStore = new NotificationStore { Notifications = store.Notifications };
+            var tempStore = new NotificationStore 
+            { 
+                Notifications = store.Notifications,
+                ReturnConfig = store.ReturnConfig,
+                LastOpenUnixTime = store.LastOpenUnixTime
+            };
             var jsonWithoutCrc = JsonUtility.ToJson(tempStore);
             var jsonBytes = Encoding.UTF8.GetBytes(jsonWithoutCrc);
             
@@ -1477,8 +1535,13 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
                     // Parse store
                     var store = JsonUtility.FromJson<NotificationStore>(json);
                     
-                    // Verify CRC32 - compute from notifications without Crc32 field
-                    var tempStore = new NotificationStore { Notifications = store.Notifications };
+                    // Verify CRC32 - compute from data without Crc32 field
+                    var tempStore = new NotificationStore 
+                    { 
+                        Notifications = store.Notifications,
+                        ReturnConfig = store.ReturnConfig,
+                        LastOpenUnixTime = store.LastOpenUnixTime
+                    };
                     var jsonWithoutCrc = JsonUtility.ToJson(tempStore);
                     var computedCrc = ComputeCrc32(Encoding.UTF8.GetBytes(jsonWithoutCrc));
                     
@@ -1503,6 +1566,19 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
                         }
                     }
                     finally { dictLock.ExitWriteLock(); }
+                    
+                    // Restore ReturnConfig and LastOpenTime
+                    if (store.ReturnConfig != null)
+                        returnConfig = store.ReturnConfig;
+                    else
+                        returnConfig = new ReturnNotificationConfig();
+                    
+                    // Restore LastOpenTime to cache
+                    if (store.LastOpenUnixTime > 0)
+                    {
+                        var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                        cachedLastOpenTime = epoch.AddSeconds(store.LastOpenUnixTime);
+                    }
                     
                     LogInfo("Loaded notification IDs (atomic file)", store.Notifications.Count);
                     return;
@@ -1659,9 +1735,15 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     {
         try
         {
-            var currentTime = DateTime.UtcNow.ToString("o");
-            PlayerPrefs.SetString(PREFS_KEY_LAST_OPEN_TIME, currentTime);
-            InvalidateDateTimeCache();
+            // Use cache only, atomic file persistence via MarkDirty()
+            lock (cacheLock)
+            {
+                cachedLastOpenTime = DateTime.UtcNow;
+                cachedHoursSinceOpen = 0;
+                lastCacheTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+            }
+            MarkDirty(); // Trigger async save to atomic file (SaveScheduledIds handles LastOpenUnixTime)
+            // NO PlayerPrefs - fully migrated to atomic file
         }
         catch (Exception e)
         {
@@ -1672,13 +1754,11 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 
     private DateTime GetLastOpenTime()
     {
-        if (PlayerPrefs.HasKey(PREFS_KEY_LAST_OPEN_TIME))
+        lock (cacheLock)
         {
-            var timeString = PlayerPrefs.GetString(PREFS_KEY_LAST_OPEN_TIME);
-            if (DateTime.TryParse(timeString, out DateTime lastTime))
-                return lastTime;
+            return cachedLastOpenTime ?? DateTime.UtcNow;
         }
-        return DateTime.UtcNow;
+        // NO PlayerPrefs - read from cache (loaded from atomic file in LoadScheduledIds)
     }
 
     private void LoadReturnConfig()
@@ -1702,16 +1782,8 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 
     private void SaveReturnConfig()
     {
-        try
-        {
-            var json = JsonUtility.ToJson(returnConfig);
-            PlayerPrefs.SetString(PREFS_KEY_RETURN_CONFIG, json);
-        }
-        catch (Exception e)
-        {
-            RecordError("SaveReturnConfig", e);
-            LogError("Failed to save return config", e.Message);
-        }
+        // No-op: ReturnConfig is now saved in SaveScheduledIds() atomic file
+        // Kept for backward compatibility and to avoid breaking existing code
     }
     #endregion
 
@@ -1841,29 +1913,38 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     #region DateTime Operations
     public double GetHoursSinceLastOpen()
     {
-        float currentTime = Time.time;
+        long currentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
         
         // Fast path: check without lock first (double-checked locking pattern)
-        float cachedTime = lastCacheTime;
-        if (currentTime - cachedTime <= Timeouts.DateTimeCache && cachedTime > 0)
+        long cachedTicks = lastCacheTicks;
+        if (cachedTicks > 0)
         {
-            // Most common case - cache is fresh, no lock needed
-            return cachedHoursSinceOpen;
+            double elapsedSeconds = (currentTicks - cachedTicks) / (double)System.Diagnostics.Stopwatch.Frequency;
+            if (elapsedSeconds <= Timeouts.DateTimeCache)
+            {
+                // Most common case - cache is fresh, no lock needed
+                return cachedHoursSinceOpen;
+            }
         }
         
         // Slow path: need to refresh cache
         lock (cacheLock)
         {
             // Double-check inside lock (another thread might have updated)
-            if (currentTime - lastCacheTime <= Timeouts.DateTimeCache && lastCacheTime > 0)
+            currentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (lastCacheTicks > 0)
             {
-                return cachedHoursSinceOpen;
+                double elapsedSeconds = (currentTicks - lastCacheTicks) / (double)System.Diagnostics.Stopwatch.Frequency;
+                if (elapsedSeconds <= Timeouts.DateTimeCache)
+                {
+                    return cachedHoursSinceOpen;
+                }
             }
             
             // Actually refresh the cache
-                cachedLastOpenTime = GetLastOpenTime();
-                cachedHoursSinceOpen = (DateTime.UtcNow - cachedLastOpenTime.Value).TotalHours;
-            lastCacheTime = currentTime;
+            cachedLastOpenTime = GetLastOpenTime();
+            cachedHoursSinceOpen = (DateTime.UtcNow - cachedLastOpenTime.Value).TotalHours;
+            lastCacheTicks = currentTicks;
             
             return cachedHoursSinceOpen;
         }
@@ -1874,7 +1955,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         lock (cacheLock)
         {
             cachedLastOpenTime = null;
-            lastCacheTime = 0f; // Volatile write
+            lastCacheTicks = 0L; // Reset monotonic clock
         }
     }
     #endregion
@@ -2474,7 +2555,8 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
                 trigger.Second = fireDate.Second;
                 break;
             case RepeatInterval.Weekly:
-                trigger.Day = (int)fireDate.DayOfWeek + 1;
+                // Weekday: 1=Sunday, 2=Monday, ..., 7=Saturday (Apple docs)
+                trigger.Weekday = (int)fireDate.DayOfWeek + 1;
                 trigger.Hour = fireDate.Hour;
                 trigger.Minute = fireDate.Minute;
                 break;
@@ -2951,6 +3033,63 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         #else
             return false;
         #endif
+    }
+
+    /// <summary>
+    /// Unified async permission request API (cross-platform)
+    /// </summary>
+    /// <param name="ct">Cancellation token for async operation</param>
+    /// <returns>True if permission granted, false if denied</returns>
+    /// <remarks>
+    /// This is the recommended way to request permissions. 
+    /// Waits for user response with timeout protection.
+    /// </remarks>
+    public async Task<bool> RequestPermissionAsync(CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        
+        if (HasNotificationPermission())
+            return true; // Already granted
+            
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(Timeouts.IosAuthorization));
+        
+        var tcs = new TaskCompletionSource<bool>();
+        
+#if UNITY_ANDROID
+        RequestAuthorizationAndroid(granted => 
+        {
+            if (!tcs.Task.IsCompleted)
+                tcs.TrySetResult(granted);
+        });
+#elif UNITY_IOS
+        pendingIosPermissionCallback = granted => 
+        {
+            if (!tcs.Task.IsCompleted)
+                tcs.TrySetResult(granted);
+        };
+        
+        if (authCoroutine != null) StopCoroutine(authCoroutine);
+        authCoroutine = StartCoroutine(RequestAuthorizationiOS(pendingIosPermissionCallback));
+#else
+        tcs.TrySetResult(true); // Editor/unsupported platform
+#endif
+        
+        cts.Token.Register(() => 
+        {
+            if (!tcs.Task.IsCompleted)
+                tcs.TrySetCanceled();
+        });
+        
+        try
+        {
+            return await tcs.Task;
+        }
+        catch (OperationCanceledException) 
+        {
+            LogWarning("Permission request timed out");
+            throw new TimeoutException("Permission request timed out");
+        }
     }
 
     int INotificationService.GetScheduledNotificationCount() => GetScheduledNotificationCount();
@@ -3591,7 +3730,22 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         try { return AndroidNotificationCenter.CheckScheduledNotificationStatus(id).ToString(); }
         catch (Exception e) { LogError("Failed to get status", e.Message); return "Error"; }
 #elif UNITY_IOS
-        return "Scheduled";
+        try
+        {
+            // Check if scheduled
+            var scheduled = iOSNotificationCenter.GetScheduledNotifications();
+            if (scheduled.Any(n => n.Identifier == identifier))
+                return "Scheduled";
+            
+            // Check if delivered
+            var delivered = iOSNotificationCenter.GetDeliveredNotifications();
+            if (delivered.Any(n => n.Identifier == identifier))
+                return "Delivered";
+            
+            // Not found in either list
+            return "Not Found";
+        }
+        catch (Exception e) { LogError("Failed to get iOS status", e.Message); return "Error"; }
 #else
         return "Unknown";
 #endif
