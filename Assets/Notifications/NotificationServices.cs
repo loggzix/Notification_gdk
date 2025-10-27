@@ -212,8 +212,22 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             return success;
         }
 
-        public async Task<bool> ScheduleAsync(CancellationToken ct = default) 
-            => await Task.Run(() => Schedule(), ct);
+        public async Task<bool> ScheduleAsync(CancellationToken ct = default)
+        {
+            var tcs = new TaskCompletionSource<bool>();
+            service.RunOnMainThread(() =>
+            {
+                try
+                {
+                    var result = Schedule();
+                    tcs.TrySetResult(result);
+                }
+                catch (Exception e) { tcs.TrySetException(e); }
+            });
+            
+            using (ct.Register(() => tcs.TrySetCanceled()))
+                return await tcs.Task;
+        }
     }
     #endregion
 
@@ -279,7 +293,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     private bool disposed;
     
     private Dictionary<string, int> scheduledNotificationIds = new Dictionary<string, int>();
-    private readonly object dictLock = new object();
+    private readonly ReaderWriterLockSlim dictLock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
     
     private Dictionary<string, HashSet<string>> notificationGroups = new Dictionary<string, HashSet<string>>();
     private readonly object groupsLock = new object();
@@ -287,6 +301,9 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     private ReturnNotificationConfig returnConfig;
     private volatile int dirtyFlag;
     private Coroutine saveCoroutine;
+    
+    private readonly Queue<Action> mainThreadActions = new Queue<Action>();
+    private readonly object mainThreadLock = new object();
     
     private readonly Stack<NotificationData> notificationDataPool = new Stack<NotificationData>(PoolSizes.NotificationData);
     private readonly Stack<NotificationEvent> eventPool = new Stack<NotificationEvent>(PoolSizes.Events);
@@ -298,9 +315,6 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     private double cachedHoursSinceOpen;
     private float lastCacheTime;
     private readonly object cacheLock = new object();
-    
-    private readonly List<string> reusableIdentifiersList = new List<string>(Limits.MaxTrackedNotifications);
-    private readonly object listLock = new object();
     
     private event Action<NotificationEvent> _onNotificationEvent;
     private readonly object eventLock = new object();
@@ -329,6 +343,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     private volatile bool hasAndroidPermission;
     private volatile bool isCheckingPermission;
     private AndroidNotificationChannel cachedChannel;
+    private PermissionCallbacks permissionCallbacks;
 #endif
 
 #if UNITY_IOS
@@ -379,7 +394,11 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 #endif
     }
 
-    private void Update() => CheckCircuitBreaker();
+    private void Update()
+    {
+        CheckCircuitBreaker();
+        ProcessMainThreadActions();
+    }
 
     private void OnApplicationPause(bool pauseStatus)
     {
@@ -472,6 +491,39 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     }
     #endregion
 
+    #region Main Thread Dispatcher
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void RunOnMainThread(Action action)
+    {
+        lock (mainThreadLock)
+        {
+            mainThreadActions.Enqueue(action);
+        }
+    }
+
+    private void ProcessMainThreadActions()
+    {
+        Action[] actions = null;
+        lock (mainThreadLock)
+        {
+            if (mainThreadActions.Count > 0)
+            {
+                actions = mainThreadActions.ToArray();
+                mainThreadActions.Clear();
+            }
+        }
+
+        if (actions != null)
+        {
+            foreach (var action in actions)
+            {
+                try { action?.Invoke(); }
+                catch (Exception e) { LogError("Main thread action failed", e.Message); }
+            }
+        }
+    }
+    #endregion
+
     #region Initialization
     private void Initialize()
     {
@@ -528,8 +580,16 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 
     private IEnumerator DebouncedSaveCoroutine()
     {
-        yield return new WaitForSeconds(Timeouts.SaveDebounce);
-        _ = FlushSaveAsync().ConfigureAwait(false);
+        float elapsed = 0f;
+        while (elapsed < Timeouts.SaveDebounce)
+        {
+            if (applicationQuitting || disposed) yield break;
+            elapsed += Time.deltaTime;
+            yield return null;
+        }
+        
+        if (!applicationQuitting && !disposed)
+            _ = FlushSaveAsync().ConfigureAwait(false);
     }
 
     private async Task FlushSaveAsync()
@@ -541,34 +601,44 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             return;
         }
 
-        // Run on main thread since PlayerPrefs requires main thread access
-        try
+        var tcs = new TaskCompletionSource<bool>();
+        
+        RunOnMainThread(() =>
         {
-            SaveScheduledIds();
-            SaveReturnConfig();
-
-            for (int i = 0; i < RetryConfig.SaveAttempts; i++)
+            try
             {
-                try
+                SaveScheduledIds();
+                SaveReturnConfig();
+
+                for (int i = 0; i < RetryConfig.SaveAttempts; i++)
                 {
-                    PlayerPrefs.Save();
-                    RecordSuccess();
-                    return;
-                }
-                catch (Exception e)
-                {
-                    LogError($"PlayerPrefs.Save failed, attempt {i + 1}", e.Message);
-                    if (i < RetryConfig.SaveAttempts - 1)
-                        await Task.Delay(RetryConfig.SaveDelayMs);
-                    else
-                        RecordError("FlushSave", e);
+                    try
+                    {
+                        PlayerPrefs.Save();
+                        RecordSuccess();
+                        tcs.TrySetResult(true);
+                        return;
+                    }
+                    catch (Exception e)
+                    {
+                        LogError($"PlayerPrefs.Save failed, attempt {i + 1}", e.Message);
+                        if (i >= RetryConfig.SaveAttempts - 1)
+                        {
+                            RecordError("FlushSave", e);
+                            tcs.TrySetException(e);
+                        }
+                    }
                 }
             }
-        }
-        catch (Exception ex)
-        {
-            RecordError("FlushSave", ex);
-        }
+            catch (Exception ex)
+            {
+                RecordError("FlushSave", ex);
+                tcs.TrySetException(ex);
+            }
+        });
+
+        try { await tcs.Task; }
+        catch { /* Already logged */ }
     }
 
     private void SaveScheduledIds()
@@ -576,10 +646,9 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         try
         {
             List<KeyValuePair<string, int>> snapshot;
-            lock (dictLock)
-            {
-                snapshot = scheduledNotificationIds.ToList();
-            }
+            dictLock.EnterReadLock();
+            try { snapshot = scheduledNotificationIds.ToList(); }
+            finally { dictLock.ExitReadLock(); }
             
             var wrapper = new ScheduledIdsWrapper
             {
@@ -613,7 +682,8 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             var json = PlayerPrefs.GetString(PREFS_KEY_SCHEDULED_IDS);
             var wrapper = JsonUtility.FromJson<ScheduledIdsWrapper>(json);
             
-            lock (dictLock)
+            dictLock.EnterWriteLock();
+            try
             {
                 scheduledNotificationIds.Clear();
                 identifierQueue.Clear();
@@ -626,6 +696,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
                     identifierQueue.Enqueue(id);
                 }
             }
+            finally { dictLock.ExitWriteLock(); }
             
             LogInfo("Loaded notification IDs", wrapper.identifiers.Count);
             StartCoroutine(CleanupExpiredNotificationsAsync());
@@ -634,11 +705,13 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         {
             RecordError("LoadScheduledIds", e);
             LogError("Failed to load notification IDs", e.Message);
-            lock (dictLock) 
-            { 
+            dictLock.EnterWriteLock();
+            try
+            {
                 scheduledNotificationIds.Clear(); 
                 identifierQueue.Clear();
             }
+            finally { dictLock.ExitWriteLock(); }
         }
     }
 
@@ -650,10 +723,18 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             var toRemove = new List<string>();
             int processedCount = 0;
             
-            lock (dictLock)
+            // Read phase
+            dictLock.EnterReadLock();
+            try
             {
                 foreach (var kvp in scheduledNotificationIds)
                 {
+                    if (applicationQuitting || disposed)
+                    {
+                        dictLock.ExitReadLock();
+                        yield break;
+                    }
+                    
                     try
                     {
                         var status = AndroidNotificationCenter.CheckScheduledNotificationStatus(kvp.Value);
@@ -663,17 +744,29 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
                     catch (Exception e) { LogError("Failed to check notification status", e.Message); }
                     
                     processedCount++;
-                    if (processedCount % Limits.CleanupBatchSize == 0) yield return null;
+                    if (processedCount % Limits.CleanupBatchSize == 0)
+                    {
+                        dictLock.ExitReadLock();
+                        yield return null;
+                        
+                        if (applicationQuitting || disposed) yield break;
+                        dictLock.EnterReadLock();
+                    }
                 }
             }
+            finally { dictLock.ExitReadLock(); }
             
-            if (toRemove.Count > 0)
+            // Write phase
+            if (toRemove.Count > 0 && !applicationQuitting && !disposed)
             {
-                lock (dictLock)
+                dictLock.EnterWriteLock();
+                try
                 {
                     foreach (var key in toRemove)
                         scheduledNotificationIds.Remove(key);
                 }
+                finally { dictLock.ExitWriteLock(); }
+                
                 foreach (var key in toRemove) RemoveFromGroup(key);
                 LogInfo("Cleaned up expired notifications", toRemove.Count);
                 MarkDirty();
@@ -843,15 +936,11 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 
     public IReadOnlyList<string> GetNotificationsByGroup(string groupKey)
     {
-        lock (listLock)
+        lock (groupsLock)
         {
-            reusableIdentifiersList.Clear();
-            lock (groupsLock)
-            {
-                if (notificationGroups.TryGetValue(groupKey, out HashSet<string> group))
-                    reusableIdentifiersList.AddRange(group);
-            }
-            return reusableIdentifiersList;
+            if (notificationGroups.TryGetValue(groupKey, out HashSet<string> group))
+                return group.ToArray();
+            return Array.Empty<string>();
         }
     }
     #endregion
@@ -882,40 +971,44 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     #endregion
 
     #region Logging - Zero Allocation
+    private const string LOG_PREFIX = "[NotificationServices] ";
+    private const string LOG_ERROR_PREFIX = "[NotificationServices] ERROR - ";
+    
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void LogInfo(string message, int value)
     {
         var builder = GetThreadLogBuilder();
         builder.Clear();
-        builder.Append("[NotificationServices] ");
-        builder.Append(message);
-        builder.Append(": ");
-        builder.Append(value);
-        Debug.Log(builder.ToString());
+        builder.Append(LOG_PREFIX).Append(message).Append(": ").Append(value);
+        Debug.Log(builder);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void LogInfo(string message, string value)
     {
+        if (string.IsNullOrEmpty(value))
+        {
+            Debug.Log($"{LOG_PREFIX}{message}: (null)");
+            return;
+        }
         var builder = GetThreadLogBuilder();
         builder.Clear();
-        builder.Append("[NotificationServices] ");
-        builder.Append(message);
-        builder.Append(": ");
-        builder.Append(value);
-        Debug.Log(builder.ToString());
+        builder.Append(LOG_PREFIX).Append(message).Append(": ").Append(value);
+        Debug.Log(builder);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void LogError(string message, string error)
     {
+        if (string.IsNullOrEmpty(error))
+        {
+            Debug.LogError($"{LOG_ERROR_PREFIX}{message}: (null)");
+            return;
+        }
         var builder = GetThreadLogBuilder();
         builder.Clear();
-        builder.Append("[NotificationServices] ERROR - ");
-        builder.Append(message);
-        builder.Append(": ");
-        builder.Append(error);
-        Debug.LogError(builder.ToString());
+        builder.Append(LOG_ERROR_PREFIX).Append(message).Append(": ").Append(error);
+        Debug.LogError(builder);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -923,14 +1016,9 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     {
         var builder = GetThreadLogBuilder();
         builder.Clear();
-        builder.Append("[NotificationServices] Scheduled '");
-        builder.Append(title);
-        builder.Append("' in ");
-        builder.Append(seconds);
-        builder.Append("s (ID: ");
-        builder.Append(id);
-        builder.Append(')');
-        Debug.Log(builder.ToString());
+        builder.Append(LOG_PREFIX).Append("Scheduled '").Append(title)
+               .Append("' in ").Append(seconds).Append("s (ID: ").Append(id).Append(')');
+        Debug.Log(builder);
     }
     #endregion
 
@@ -939,7 +1027,9 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     private bool CanScheduleMore()
     {
         int currentCount;
-        lock (dictLock) { currentCount = scheduledNotificationIds.Count; }
+        dictLock.EnterReadLock();
+        try { currentCount = scheduledNotificationIds.Count; }
+        finally { dictLock.ExitReadLock(); }
         
         if (IS_IOS && currentCount >= Limits.IosMaxNotifications)
         {
@@ -992,11 +1082,33 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             return;
         }
 
-        var callbacks = new PermissionCallbacks();
-        callbacks.PermissionGranted += OnAndroidPermissionGranted;
-        callbacks.PermissionDenied += OnAndroidPermissionDenied;
-        callbacks.PermissionDeniedAndDontAskAgain += OnAndroidPermissionDeniedAndDontAskAgain;
-        Permission.RequestUserPermission("android.permission.POST_NOTIFICATIONS", callbacks);
+        // Cleanup old callbacks if exists
+        CleanupAndroidCallbacks();
+
+        permissionCallbacks = new PermissionCallbacks();
+        permissionCallbacks.PermissionGranted += OnAndroidPermissionGranted;
+        permissionCallbacks.PermissionDenied += OnAndroidPermissionDenied;
+        
+#pragma warning disable CS0618
+        permissionCallbacks.PermissionDeniedAndDontAskAgain += OnAndroidPermissionDeniedAndDontAskAgain;
+#pragma warning restore CS0618
+        
+        Permission.RequestUserPermission("android.permission.POST_NOTIFICATIONS", permissionCallbacks);
+    }
+
+    private void CleanupAndroidCallbacks()
+    {
+        if (permissionCallbacks != null)
+        {
+            permissionCallbacks.PermissionGranted -= OnAndroidPermissionGranted;
+            permissionCallbacks.PermissionDenied -= OnAndroidPermissionDenied;
+            
+#pragma warning disable CS0618
+            permissionCallbacks.PermissionDeniedAndDontAskAgain -= OnAndroidPermissionDeniedAndDontAskAgain;
+#pragma warning restore CS0618
+            
+            permissionCallbacks = null;
+        }
     }
 
     private void OnAndroidPermissionGranted(string permissionName)
@@ -1006,6 +1118,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             hasAndroidPermission = true;
             isCheckingPermission = false;
             DispatchEvent(NotificationEvent.EventType.PermissionGranted, "", "");
+            CleanupAndroidCallbacks();
         }
     }
 
@@ -1016,6 +1129,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             hasAndroidPermission = false;
             isCheckingPermission = false;
             DispatchEvent(NotificationEvent.EventType.PermissionDenied, "", "");
+            CleanupAndroidCallbacks();
         }
     }
 
@@ -1026,6 +1140,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             hasAndroidPermission = false;
             isCheckingPermission = false;
             DispatchEvent(NotificationEvent.EventType.PermissionDenied, "", "Permanent");
+            CleanupAndroidCallbacks();
         }
     }
 
@@ -1139,11 +1254,12 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             float elapsedTime = 0f;
             while (!req.IsFinished && elapsedTime < Timeouts.IosAuthorization)
             {
+                if (applicationQuitting || disposed) yield break;
                 elapsedTime += Time.deltaTime;
                 yield return null;
             }
 
-            if (this == null || !isInitialized || applicationQuitting) yield break;
+            if (this == null || !isInitialized || applicationQuitting || disposed) yield break;
 
             if (elapsedTime >= Timeouts.IosAuthorization)
             {
@@ -1336,19 +1452,43 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     #region Helper Methods
     private void AddNotificationId(string identifier, int id, string groupKey = null)
     {
-        lock (dictLock)
+        string oldestKey = null;
+        dictLock.EnterWriteLock();
+        try
         {
+            // Safety check: ensure queue and dict are in sync
+            while (identifierQueue.Count > scheduledNotificationIds.Count)
+            {
+                identifierQueue.TryDequeue(out _);
+            }
+            
             if (scheduledNotificationIds.Count >= Limits.MaxTrackedNotifications)
             {
-                if (identifierQueue.TryDequeue(out var oldestKey))
+                if (identifierQueue.TryDequeue(out oldestKey))
                 {
                     scheduledNotificationIds.Remove(oldestKey);
-                    RemoveFromGroup(oldestKey);
+                    Debug.LogWarning($"[NotificationServices] Max tracked notifications reached, removing oldest: {oldestKey}");
                 }
             }
+            
+            // Remove duplicate if exists
+            if (scheduledNotificationIds.ContainsKey(identifier))
+                scheduledNotificationIds.Remove(identifier);
+            
             scheduledNotificationIds[identifier] = id;
             identifierQueue.Enqueue(identifier);
+            
+            // Final safety check
+            if (identifierQueue.Count > Limits.MaxTrackedNotifications)
+            {
+                Debug.LogError("[NotificationServices] Queue size exceeded limit, forcing cleanup");
+                while (identifierQueue.Count > scheduledNotificationIds.Count)
+                    identifierQueue.TryDequeue(out _);
+            }
         }
+        finally { dictLock.ExitWriteLock(); }
+        
+        if (oldestKey != null) RemoveFromGroup(oldestKey);
         if (!string.IsNullOrEmpty(groupKey)) AddToGroup(identifier, groupKey);
         MarkDirty();
     }
@@ -1358,7 +1498,11 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 #if UNITY_ANDROID
         if (IS_ANDROID && isInitialized)
         {
-            try { AndroidNotificationCenter.OnNotificationReceived -= OnNotificationReceived; }
+            try 
+            { 
+                AndroidNotificationCenter.OnNotificationReceived -= OnNotificationReceived;
+                CleanupAndroidCallbacks();
+            }
             catch (Exception e) { LogError("Failed to unregister Android callback", e.Message); }
         }
 #endif
@@ -1378,16 +1522,24 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         }
 
         _ = FlushSaveAsync().ConfigureAwait(false);
-        lock (dictLock) 
+        
+        dictLock.EnterWriteLock();
+        try
         { 
             scheduledNotificationIds.Clear(); 
             identifierQueue.Clear();
         }
+        finally 
+        { 
+            dictLock.ExitWriteLock(); 
+            dictLock.Dispose(); 
+        }
+        
         lock (groupsLock) { notificationGroups.Clear(); }
         lock (poolLock) { notificationDataPool.Clear(); eventPool.Clear(); }
-        lock (listLock) { reusableIdentifiersList.Clear(); }
         lock (eventLock) { _onNotificationEvent = null; }
         lock (errorEventLock) { _onError = null; }
+        lock (mainThreadLock) { mainThreadActions.Clear(); }
     }
     #endregion
 
@@ -1444,12 +1596,14 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         if (!isInitialized) Initialize();
 
 #if UNITY_ANDROID
-        if (IS_ANDROID) return SendAndroidNotification(data) >= 0;
-#endif
-#if UNITY_IOS
-        if (IS_IOS) { SendiOSNotification(data); return true; }
-#endif
+        return SendAndroidNotification(data) >= 0;
+#elif UNITY_IOS
+        SendiOSNotification(data);
+        return true;
+#else
+        Debug.LogWarning("[NotificationServices] Platform not supported");
         return false;
+#endif
     }
 
     public void SendNotification(string title, string body, int days, int hours, int minutes, int seconds, string identifier = null)
@@ -1469,11 +1623,14 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         
         int id;
         bool found;
-        lock (dictLock)
+        dictLock.EnterWriteLock();
+        try
         {
             found = scheduledNotificationIds.TryGetValue(identifier, out id);
             if (found) scheduledNotificationIds.Remove(identifier);
         }
+        finally { dictLock.ExitWriteLock(); }
+        
         if (!found) return;
 
         try
@@ -1504,11 +1661,14 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 #if UNITY_IOS
             if (IS_IOS) iOSNotificationCenter.RemoveAllScheduledNotifications();
 #endif
-            lock (dictLock) 
+            dictLock.EnterWriteLock();
+            try
             { 
                 scheduledNotificationIds.Clear(); 
                 identifierQueue.Clear();
             }
+            finally { dictLock.ExitWriteLock(); }
+            
             lock (groupsLock) { notificationGroups.Clear(); }
             MarkDirty();
         }
@@ -1553,26 +1713,28 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     public bool HasNotificationPermission()
     {
 #if UNITY_ANDROID
-        if (IS_ANDROID) return hasAndroidPermission;
+        return hasAndroidPermission;
+#elif UNITY_IOS
+        return true;
+#else
+        return false;
 #endif
-        return IS_IOS;
     }
 
     int INotificationService.GetScheduledNotificationCount() => GetScheduledNotificationCount();
 
     public int GetScheduledNotificationCount()
     {
-        lock (dictLock) { return scheduledNotificationIds.Count; }
+        dictLock.EnterReadLock();
+        try { return scheduledNotificationIds.Count; }
+        finally { dictLock.ExitReadLock(); }
     }
 
     public IReadOnlyList<string> GetAllScheduledIdentifiers()
     {
-        lock (listLock)
-        {
-            reusableIdentifiersList.Clear();
-            lock (dictLock) { reusableIdentifiersList.AddRange(scheduledNotificationIds.Keys); }
-            return reusableIdentifiersList;
-        }
+        dictLock.EnterReadLock();
+        try { return scheduledNotificationIds.Keys.ToArray(); }
+        finally { dictLock.ExitReadLock(); }
     }
 
     public void SetBadgeCount(int count)
@@ -1592,16 +1754,72 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 
     #region Async API
     public async Task<bool> SendNotificationAsync(string title, string body, int fireTimeInSeconds, string identifier = null, CancellationToken ct = default)
-        => await Task.Run(() => SendNotification(title, body, fireTimeInSeconds, identifier), ct);
+    {
+        var tcs = new TaskCompletionSource<bool>();
+        RunOnMainThread(() =>
+        {
+            try
+            {
+                var result = SendNotification(title, body, fireTimeInSeconds, identifier);
+                tcs.TrySetResult(result);
+            }
+            catch (Exception e) { tcs.TrySetException(e); }
+        });
+        
+        using (ct.Register(() => tcs.TrySetCanceled()))
+            return await tcs.Task;
+    }
 
     public async Task<bool> SendNotificationAsync(NotificationData data, CancellationToken ct = default)
-        => await Task.Run(() => { SendNotification(data); return true; }, ct);
+    {
+        var tcs = new TaskCompletionSource<bool>();
+        RunOnMainThread(() =>
+        {
+            try
+            {
+                SendNotification(data);
+                tcs.TrySetResult(true);
+            }
+            catch (Exception e) { tcs.TrySetException(e); }
+        });
+        
+        using (ct.Register(() => tcs.TrySetCanceled()))
+            return await tcs.Task;
+    }
 
     public async Task CancelNotificationAsync(string identifier, CancellationToken ct = default)
-        => await Task.Run(() => CancelNotification(identifier), ct);
+    {
+        var tcs = new TaskCompletionSource<bool>();
+        RunOnMainThread(() =>
+        {
+            try
+            {
+                CancelNotification(identifier);
+                tcs.TrySetResult(true);
+            }
+            catch (Exception e) { tcs.TrySetException(e); }
+        });
+        
+        using (ct.Register(() => tcs.TrySetCanceled()))
+            await tcs.Task;
+    }
 
     public async Task<int> GetScheduledNotificationCountAsync(CancellationToken ct = default)
-        => await Task.Run(() => GetScheduledNotificationCount(), ct);
+    {
+        var tcs = new TaskCompletionSource<int>();
+        RunOnMainThread(() =>
+        {
+            try
+            {
+                var count = GetScheduledNotificationCount();
+                tcs.TrySetResult(count);
+            }
+            catch (Exception e) { tcs.TrySetException(e); }
+        });
+        
+        using (ct.Register(() => tcs.TrySetCanceled()))
+            return await tcs.Task;
+    }
     #endregion
 
     #region App Lifecycle
@@ -1667,56 +1885,93 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     {
         if (identifiers is not { Count: > 0 }) return;
 
-        int cancelledCount = 0;
-        foreach (var identifier in identifiers)
+        var idsToCancel = new List<(string identifier, int id)>(identifiers.Count);
+        
+        // Batch read/write in single lock
+        dictLock.EnterWriteLock();
+        try
         {
-            int id;
-            bool found;
-            lock (dictLock)
+            foreach (var identifier in identifiers)
             {
-                found = scheduledNotificationIds.TryGetValue(identifier, out id);
-                if (found) scheduledNotificationIds.Remove(identifier);
-            }
-            
-            if (found)
-            {
-                try
+                if (scheduledNotificationIds.TryGetValue(identifier, out int id))
                 {
-#if UNITY_ANDROID
-                    if (IS_ANDROID) AndroidNotificationCenter.CancelScheduledNotification(id);
-#endif
-#if UNITY_IOS
-                    if (IS_IOS) iOSNotificationCenter.RemoveScheduledNotification(identifier);
-#endif
-                    RemoveFromGroup(identifier);
-                    cancelledCount++;
-                }
-                catch (Exception e)
-                {
-                    RecordError("CancelNotificationBatch", e);
-                    LogError("Failed to cancel in batch", e.Message);
+                    scheduledNotificationIds.Remove(identifier);
+                    idsToCancel.Add((identifier, id));
                 }
             }
         }
-        if (cancelledCount > 0) 
+        finally { dictLock.ExitWriteLock(); }
+        
+        // Cancel outside lock
+        foreach (var (identifier, id) in idsToCancel)
+        {
+            try
+            {
+#if UNITY_ANDROID
+                if (IS_ANDROID) AndroidNotificationCenter.CancelScheduledNotification(id);
+#endif
+#if UNITY_IOS
+                if (IS_IOS) iOSNotificationCenter.RemoveScheduledNotification(identifier);
+#endif
+                RemoveFromGroup(identifier);
+            }
+            catch (Exception e)
+            {
+                RecordError("CancelNotificationBatch", e);
+                LogError("Failed to cancel in batch", e.Message);
+            }
+        }
+        
+        if (idsToCancel.Count > 0) 
         { 
             MarkDirty(); 
-            LogInfo("Cancelled batch", cancelledCount); 
+            LogInfo("Cancelled batch", idsToCancel.Count); 
         }
     }
 
     public async Task SendNotificationBatchAsync(List<NotificationData> notifications, CancellationToken ct = default)
-        => await Task.Run(() => SendNotificationBatch(notifications), ct);
+    {
+        var tcs = new TaskCompletionSource<bool>();
+        RunOnMainThread(() =>
+        {
+            try
+            {
+                SendNotificationBatch(notifications);
+                tcs.TrySetResult(true);
+            }
+            catch (Exception e) { tcs.TrySetException(e); }
+        });
+        
+        using (ct.Register(() => tcs.TrySetCanceled()))
+            await tcs.Task;
+    }
     
     public async Task CancelNotificationBatchAsync(List<string> identifiers, CancellationToken ct = default)
-        => await Task.Run(() => CancelNotificationBatch(identifiers), ct);
+    {
+        var tcs = new TaskCompletionSource<bool>();
+        RunOnMainThread(() =>
+        {
+            try
+            {
+                CancelNotificationBatch(identifiers);
+                tcs.TrySetResult(true);
+            }
+            catch (Exception e) { tcs.TrySetException(e); }
+        });
+        
+        using (ct.Register(() => tcs.TrySetCanceled()))
+            await tcs.Task;
+    }
     #endregion
 
     #region Debug
     public Dictionary<string, object> GetDebugInfo()
     {
         int scheduledCount, groupCount;
-        lock (dictLock) { scheduledCount = scheduledNotificationIds.Count; }
+        dictLock.EnterReadLock();
+        try { scheduledCount = scheduledNotificationIds.Count; }
+        finally { dictLock.ExitReadLock(); }
+        
         lock (groupsLock) { groupCount = notificationGroups.Count; }
         
         var info = new Dictionary<string, object>
@@ -1770,24 +2025,29 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 
     public bool IsNotificationScheduled(string identifier)
     {
-        lock (dictLock) { return scheduledNotificationIds.ContainsKey(identifier); }
+        dictLock.EnterReadLock();
+        try { return scheduledNotificationIds.ContainsKey(identifier); }
+        finally { dictLock.ExitReadLock(); }
     }
 
     public string GetNotificationStatus(string identifier)
     {
         int id;
         bool found;
-        lock (dictLock) { found = scheduledNotificationIds.TryGetValue(identifier, out id); }
+        dictLock.EnterReadLock();
+        try { found = scheduledNotificationIds.TryGetValue(identifier, out id); }
+        finally { dictLock.ExitReadLock(); }
+        
         if (!found) return "Not Found";
 
 #if UNITY_ANDROID
-        if (IS_ANDROID)
-        {
-            try { return AndroidNotificationCenter.CheckScheduledNotificationStatus(id).ToString(); }
-            catch (Exception e) { LogError("Failed to get status", e.Message); return "Error"; }
-        }
-#endif
+        try { return AndroidNotificationCenter.CheckScheduledNotificationStatus(id).ToString(); }
+        catch (Exception e) { LogError("Failed to get status", e.Message); return "Error"; }
+#elif UNITY_IOS
+        return "Scheduled";
+#else
         return "Unknown";
+#endif
     }
     #endregion
 }
