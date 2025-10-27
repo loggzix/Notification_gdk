@@ -540,37 +540,35 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             Debug.LogWarning("[NotificationServices] Circuit breaker open, skipping save");
             return;
         }
-        
-        await Task.Run(() =>
+
+        // Run on main thread since PlayerPrefs requires main thread access
+        try
         {
-            try
+            SaveScheduledIds();
+            SaveReturnConfig();
+
+            for (int i = 0; i < RetryConfig.SaveAttempts; i++)
             {
-                SaveScheduledIds();
-                SaveReturnConfig();
-                
-                for (int i = 0; i < RetryConfig.SaveAttempts; i++)
+                try
                 {
-                    try
-                    {
-                        PlayerPrefs.Save();
-                        RecordSuccess();
-                        return;
-                    }
-                    catch (Exception e)
-                    {
-                        LogError($"PlayerPrefs.Save failed, attempt {i + 1}", e.Message);
-                        if (i < RetryConfig.SaveAttempts - 1) 
-                            Thread.Sleep(RetryConfig.SaveDelayMs);
-                        else 
-                            RecordError("FlushSave", e);
-                    }
+                    PlayerPrefs.Save();
+                    RecordSuccess();
+                    return;
+                }
+                catch (Exception e)
+                {
+                    LogError($"PlayerPrefs.Save failed, attempt {i + 1}", e.Message);
+                    if (i < RetryConfig.SaveAttempts - 1)
+                        await Task.Delay(RetryConfig.SaveDelayMs);
+                    else
+                        RecordError("FlushSave", e);
                 }
             }
-            catch (Exception ex) 
-            { 
-                RecordError("FlushSave", ex); 
-            }
-        });
+        }
+        catch (Exception ex)
+        {
+            RecordError("FlushSave", ex);
+        }
     }
 
     private void SaveScheduledIds()
