@@ -164,6 +164,29 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         }
     }
 
+    public sealed class PerformanceMetrics
+    {
+        public int TotalScheduled;
+        public int TotalCancelled;
+        public int TotalErrors;
+        public int PoolHits;
+        public int PoolMisses;
+        public double AverageSaveTimeMs;
+        public DateTime StartTime;
+        
+        public PerformanceMetrics()
+        {
+            StartTime = DateTime.UtcNow;
+        }
+        
+        public void Reset()
+        {
+            TotalScheduled = TotalCancelled = TotalErrors = PoolHits = PoolMisses = 0;
+            AverageSaveTimeMs = 0;
+            StartTime = DateTime.UtcNow;
+        }
+    }
+
     public sealed class NotificationBuilder
     {
         private readonly NotificationData data;
@@ -245,6 +268,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         public const int AndroidMaxNotifications = 500;
         public const int MaxTrackedNotifications = 100;
         public const int CleanupBatchSize = 10;
+        public const int MaxBatchSize = 50;
     }
 
     private static class PoolSizes
@@ -301,6 +325,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     private ReturnNotificationConfig returnConfig;
     private volatile int dirtyFlag;
     private Coroutine saveCoroutine;
+    private readonly object saveCoroutineLock = new object();
     
     private readonly Queue<Action> mainThreadActions = new Queue<Action>();
     private readonly object mainThreadLock = new object();
@@ -308,6 +333,9 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     private readonly Stack<NotificationData> notificationDataPool = new Stack<NotificationData>(PoolSizes.NotificationData);
     private readonly Stack<NotificationEvent> eventPool = new Stack<NotificationEvent>(PoolSizes.Events);
     private readonly object poolLock = new object();
+    
+    private readonly PerformanceMetrics metrics = new PerformanceMetrics();
+    private readonly object metricsLock = new object();
     
     [ThreadStatic] private static StringBuilder threadLogBuilder;
     
@@ -464,6 +492,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
                 Debug.LogError($"[NotificationServices] Circuit breaker OPEN after {consecutiveErrors} errors");
             }
         }
+        lock (metricsLock) { metrics.TotalErrors++; }
         DispatchErrorEvent(operation, ex);
     }
 
@@ -574,8 +603,16 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     private void MarkDirty()
     {
         Interlocked.Exchange(ref dirtyFlag, 1);
-        if (saveCoroutine != null) StopCoroutine(saveCoroutine);
-        saveCoroutine = StartCoroutine(DebouncedSaveCoroutine());
+        
+        lock (saveCoroutineLock)
+        {
+            if (saveCoroutine != null)
+            {
+                StopCoroutine(saveCoroutine);
+                saveCoroutine = null;
+            }
+            saveCoroutine = StartCoroutine(DebouncedSaveCoroutine());
+        }
     }
 
     private IEnumerator DebouncedSaveCoroutine()
@@ -840,11 +877,26 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private NotificationData GetPooledData()
     {
+        bool wasHit = false;
+        NotificationData data = null;
+        
         lock (poolLock)
         {
             if (notificationDataPool.Count > 0)
-                return notificationDataPool.Pop();
+            {
+                data = notificationDataPool.Pop();
+                wasHit = true;
+            }
         }
+        
+        // Update metrics outside of poolLock to avoid nested locks
+        if (wasHit)
+        {
+            lock (metricsLock) { metrics.PoolHits++; }
+            return data;
+        }
+        
+        lock (metricsLock) { metrics.PoolMisses++; }
         return new NotificationData();
     }
 
@@ -1220,6 +1272,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             AddNotificationId(data.identifier, id, data.groupKey);
             LogNotificationScheduled(data.title, data.fireTimeInSeconds, id);
             RecordSuccess();
+            lock (metricsLock) { metrics.TotalScheduled++; }
             return id;
         }
         catch (Exception e)
@@ -1348,6 +1401,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             AddNotificationId(identifier, 0, data.groupKey);
             LogNotificationScheduled(data.title, data.fireTimeInSeconds, badgeCount);
             RecordSuccess();
+            lock (metricsLock) { metrics.TotalScheduled++; }
         }
         catch (Exception e)
         {
@@ -1515,10 +1569,13 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         }
 #endif
 
-        if (saveCoroutine != null)
+        lock (saveCoroutineLock)
         {
-            StopCoroutine(saveCoroutine);
-            saveCoroutine = null;
+            if (saveCoroutine != null)
+            {
+                StopCoroutine(saveCoroutine);
+                saveCoroutine = null;
+            }
         }
 
         _ = FlushSaveAsync().ConfigureAwait(false);
@@ -1643,6 +1700,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 #endif
             RemoveFromGroup(identifier);
             MarkDirty();
+            lock (metricsLock) { metrics.TotalCancelled++; }
         }
         catch (Exception e)
         {
@@ -1750,6 +1808,28 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 
     public bool IsInitialized() => isInitialized;
     public async Task ForceFlushSaveAsync() => await FlushSaveAsync();
+    
+    public PerformanceMetrics GetPerformanceMetrics()
+    {
+        lock (metricsLock)
+        {
+            return new PerformanceMetrics
+            {
+                TotalScheduled = metrics.TotalScheduled,
+                TotalCancelled = metrics.TotalCancelled,
+                TotalErrors = metrics.TotalErrors,
+                PoolHits = metrics.PoolHits,
+                PoolMisses = metrics.PoolMisses,
+                AverageSaveTimeMs = metrics.AverageSaveTimeMs,
+                StartTime = metrics.StartTime
+            };
+        }
+    }
+    
+    public void ResetMetrics()
+    {
+        lock (metricsLock) { metrics.Reset(); }
+    }
     #endregion
 
     #region Async API
@@ -1864,10 +1944,23 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     public void SendNotificationBatch(List<NotificationData> notifications)
     {
         if (notifications is not { Count: > 0 }) return;
+        
+        if (notifications.Count > Limits.MaxBatchSize)
+        {
+            Debug.LogWarning($"[NotificationServices] Batch size {notifications.Count} exceeds limit {Limits.MaxBatchSize}, processing in chunks");
+        }
 
         int successCount = 0;
+        int processedCount = 0;
+        
         foreach (var data in notifications)
         {
+            if (processedCount >= Limits.MaxBatchSize)
+            {
+                Debug.LogWarning($"[NotificationServices] Reached batch size limit, processed {processedCount}/{notifications.Count}");
+                break;
+            }
+            
             if (data.IsValid() && CanScheduleMore())
             {
                 var pooledData = GetPooledData();
@@ -1876,14 +1969,25 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
                     successCount++;
                 ReturnToPool(pooledData);
             }
+            processedCount++;
         }
+        
         LogInfo("Batch scheduled", successCount);
+        if (processedCount < notifications.Count)
+            Debug.LogWarning($"[NotificationServices] Only processed {processedCount}/{notifications.Count} notifications");
+        
         MarkDirty();
     }
 
     public void CancelNotificationBatch(List<string> identifiers)
     {
         if (identifiers is not { Count: > 0 }) return;
+        
+        if (identifiers.Count > Limits.MaxBatchSize)
+        {
+            Debug.LogWarning($"[NotificationServices] Cancel batch size {identifiers.Count} exceeds limit {Limits.MaxBatchSize}");
+            identifiers = identifiers.Take(Limits.MaxBatchSize).ToList();
+        }
 
         var idsToCancel = new List<(string identifier, int id)>(identifiers.Count);
         
