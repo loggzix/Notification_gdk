@@ -1109,6 +1109,8 @@ public sealed partial class NotificationServices : MonoBehaviour, NotificationSe
     public void SetReturnNotificationEnabled(bool enabled)
     {
         ThrowIfDisposed();
+        if (returnConfig == null) return;
+        
         returnConfig.enabled = enabled;
         MarkDirty();
         if (!enabled) CancelNotification(returnConfig.identifier);
@@ -1116,7 +1118,7 @@ public sealed partial class NotificationServices : MonoBehaviour, NotificationSe
 
     private void ScheduleReturnNotification()
     {
-        if (!returnConfig.enabled) return;
+        if (returnConfig == null || !returnConfig.enabled) return;
         CancelNotification(returnConfig.identifier);
 
         var data = GetPooledData();
@@ -1134,6 +1136,8 @@ public sealed partial class NotificationServices : MonoBehaviour, NotificationSe
 
     private void CheckInactivityAndSchedule()
     {
+        if (returnConfig == null) return;
+        
         var hoursSinceLastOpen = GetHoursSinceLastOpen();
         if (returnConfig.enabled && hoursSinceLastOpen >= returnConfig.hoursBeforeNotification)
         {

@@ -771,14 +771,35 @@ public partial class NotificationServices
         try
         {
 #if UNITY_ANDROID
-            AndroidNotificationCenter.CancelAllDisplayedNotifications();
+            // Android notification APIs don't work in Editor, wrap in try-catch
+            try
+            {
+                AndroidNotificationCenter.CancelAllDisplayedNotifications();
+            }
+            catch (System.Exception)
+            {
+                // Silently fail in Editor where Android APIs don't work
+            }
 #elif UNITY_IOS
-            iOSNotificationCenter.RemoveAllDeliveredNotifications();
-            iOSNotificationCenter.ApplicationBadge = 0;
-            currentBadgeCount = 0;
+            // iOS notification center is only available on iOS devices
+            // Wrap in try-catch to handle Editor case gracefully
+            try
+            {
+                iOSNotificationCenter.RemoveAllDeliveredNotifications();
+                iOSNotificationCenter.ApplicationBadge = 0;
+                currentBadgeCount = 0;
+            }
+            catch (System.Exception)
+            {
+                // Silently fail in Editor where iOS APIs don't work
+            }
 #endif
-            CancelNotification(returnConfig.identifier);
-            CancelNotification(returnConfig.identifier + "_urgent");
+            // Check if returnConfig is configured before attempting to cancel
+            if (returnConfig != null)
+            {
+                CancelNotification(returnConfig.identifier);
+                CancelNotification(returnConfig.identifier + "_urgent");
+            }
         }
         catch (Exception e)
         {
@@ -1032,7 +1053,7 @@ public partial class NotificationServices
             ["ScheduledCount"] = scheduledCount,
             ["HasPermission"] = HasNotificationPermission(),
             ["HoursSinceLastOpen"] = GetHoursSinceLastOpen(),
-            ["ReturnNotificationEnabled"] = returnConfig.enabled,
+            ["ReturnNotificationEnabled"] = returnConfig?.enabled ?? false,
             ["Platform"] = Application.platform.ToString(),
             ["MaxNotifications"] = IS_IOS ? Limits.IosMaxNotifications : Limits.AndroidMaxNotifications,
             ["CircuitBreakerOpen"] = IsCircuitBreakerOpen(),
