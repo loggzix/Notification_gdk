@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
+using TMPro;
 #if UNITY_IOS
 using Unity.Notifications.iOS;
 #endif
@@ -11,11 +12,11 @@ using Unity.Notifications.Android;
 #endif
 
 /// <summary>
-/// Comprehensive demo script showing all NotificationServices features
+/// Script demo toàn diện thể hiện tất cả các tính năng của NotificationServices
 /// </summary>
 public class NotificationServicesDemo : MonoBehaviour
 {
-    [Header("UI References")]
+    [Header("UI Tham chiếu")]
     public Button basicNotifyBtn;
     public Button fluentBuilderBtn;
     public Button asyncBtn;
@@ -25,20 +26,24 @@ public class NotificationServicesDemo : MonoBehaviour
     public Button permissionBtn;
     public Button metricsBtn;
     public Button clearBadgeBtn;
-    public Text statusText;
-    public Text metricsText;
+    public TextMeshProUGUI statusText;
+    public TextMeshProUGUI metricsText;
 
     private int notificationCounter = 0;
+
+    private void Awake(){
+        Application.targetFrameRate = 60;
+    }
 
     private void Start()
     {
         SetupButtons();
         SubscribeToEvents();
         
-        // Display current status
+        // Hiển thị trạng thái hiện tại
         UpdateStatus();
-        
-        Debug.Log("[NotificationDemo] Demo started. All features available.");
+        ShowMetrics();
+        Debug.Log("[NotificationDemo] Demo đã bắt đầu. Tất cả tính năng đã sẵn sàng.");
     }
 
     private void SetupButtons()
@@ -71,7 +76,7 @@ public class NotificationServicesDemo : MonoBehaviour
         {
             clearBadgeBtn.onClick.AddListener(ClearBadge);
             #if !UNITY_IOS
-            clearBadgeBtn.gameObject.SetActive(false); // iOS only
+            clearBadgeBtn.gameObject.SetActive(false); // Chỉ dành cho iOS
             #endif
         }
     }
@@ -97,7 +102,7 @@ public class NotificationServicesDemo : MonoBehaviour
     #region Feature Tests
 
     /// <summary>
-    /// Demo: Basic notification scheduling
+    /// Demo: Lập lịch thông báo cơ bản
     /// </summary>
     public void TestBasicNotification()
     {
@@ -105,9 +110,9 @@ public class NotificationServicesDemo : MonoBehaviour
         {
             notificationCounter++;
             string identifier = $"basic_notif_{notificationCounter}";
-            string title = "Basic Notification";
-            string body = $"This is notification #{notificationCounter}";
-            int delaySeconds = 5; // Show in 5 seconds
+            string title = "Thông báo cơ bản";
+            string body = $"Đây là thông báo số #{notificationCounter}";
+            int delaySeconds = 5; // Hiển thị sau 5 giây
 
             bool success = NotificationServices.Instance.SendNotification(
                 title, 
@@ -118,22 +123,22 @@ public class NotificationServicesDemo : MonoBehaviour
 
             if (success)
             {
-                ShowStatus($"✅ Basic notification scheduled! (ID: {identifier}, shows in {delaySeconds}s)");
+                ShowStatus($"Đã lập lịch thông báo cơ bản! (ID: {identifier}, sẽ hiển thị sau {delaySeconds}s)");
             }
             else
             {
-                ShowStatus("❌ Failed to schedule notification");
+                ShowStatus("Không thể lập lịch thông báo");
             }
         }
         catch (Exception ex)
         {
-            ShowStatus($"❌ Error: {ex.Message}");
+            ShowStatus($"Lỗi: {ex.Message}");
             Debug.LogError(ex);
         }
     }
 
     /// <summary>
-    /// Demo: Fluent Builder API - advanced notification configuration
+    /// Demo: Fluent Builder API - cấu hình thông báo nâng cao
     /// </summary>
     public void TestFluentBuilder()
     {
@@ -143,9 +148,9 @@ public class NotificationServicesDemo : MonoBehaviour
             string identifier = $"fluent_notif_{notificationCounter}";
 
             bool success = NotificationServices.Instance.CreateNotification()
-                .WithTitle("🎮 Fluent Builder API")
-                .WithBody($"Configured via fluent chain - #{notificationCounter}")
-                .WithSubtitle("Advanced Configuration")
+                .WithTitle("Fluent Builder API")
+                .WithBody($"Cấu hình qua chuỗi fluent - #{notificationCounter}")
+                .WithSubtitle("Cấu hình nâng cao")
                 .WithIdentifier(identifier)
                 .In(TimeSpan.FromSeconds(10))
                 .WithSound("default")
@@ -154,22 +159,22 @@ public class NotificationServicesDemo : MonoBehaviour
 
             if (success)
             {
-                ShowStatus($"✅ Fluent builder notification scheduled! (ID: {identifier})");
+                ShowStatus($" Đã lập lịch thông báo fluent builder! (ID: {identifier})");
             }
             else
             {
-                ShowStatus("❌ Fluent builder failed");
+                ShowStatus(" Fluent builder thất bại");
             }
         }
         catch (Exception ex)
         {
-            ShowStatus($"❌ Error: {ex.Message}");
+            ShowStatus($" Lỗi: {ex.Message}");
             Debug.LogError(ex);
         }
     }
 
     /// <summary>
-    /// Demo: Async API with cancellation support
+    /// Demo: Async API với hỗ trợ hủy bỏ
     /// </summary>
     public async void TestAsyncAPI()
     {
@@ -178,14 +183,14 @@ public class NotificationServicesDemo : MonoBehaviour
             notificationCounter++;
             string identifier = $"async_notif_{notificationCounter}";
 
-            ShowStatus("⏳ Scheduling async notification...");
+            ShowStatus("Đang lập lịch thông báo async...");
 
             using var cts = new System.Threading.CancellationTokenSource();
             
-            // Schedule async notification
+            // Lập lịch thông báo async
             bool success = await NotificationServices.Instance.SendNotificationAsync(
-                "Async Notification",
-                $"Created using async/await - #{notificationCounter}",
+                "Thông báo Async",
+                $"Được tạo bằng async/await - #{notificationCounter}",
                 15,
                 identifier,
                 cts.Token
@@ -193,30 +198,30 @@ public class NotificationServicesDemo : MonoBehaviour
 
             if (success)
             {
-                ShowStatus($"✅ Async notification scheduled! (ID: {identifier})");
+                ShowStatus($"Đã lập lịch thông báo async! (ID: {identifier})");
             }
             else
             {
-                ShowStatus("❌ Async notification failed");
+                ShowStatus("Thông báo async thất bại");
             }
 
-            // Test async cancel
+            // Kiểm tra hủy async
             await NotificationServices.Instance.CancelNotificationAsync(identifier, cts.Token);
-            ShowStatus($"✅ Async cancellation completed!");
+            ShowStatus($"Đã hoàn thành hủy bỏ async!");
         }
         catch (OperationCanceledException)
         {
-            ShowStatus("⏸️ Operation cancelled");
+            ShowStatus("Thao tác đã bị hủy");
         }
         catch (Exception ex)
         {
-            ShowStatus($"❌ Error: {ex.Message}");
+            ShowStatus($"Lỗi: {ex.Message}");
             Debug.LogError(ex);
         }
     }
 
     /// <summary>
-    /// Demo: Batch operations - send multiple notifications at once
+    /// Demo: Thao tác hàng loạt - gửi nhiều thông báo cùng lúc
     /// </summary>
     public void TestBatchOperations()
     {
@@ -224,14 +229,14 @@ public class NotificationServicesDemo : MonoBehaviour
         {
             var notifications = new List<NotificationServices.NotificationData>();
 
-            // Create batch of 5 notifications
+            // Tạo lô 5 thông báo
             for (int i = 0; i < 5; i++)
             {
                 var data = new NotificationServices.NotificationData
                 {
-                    title = $"Batch Notification #{i + 1}",
-                    body = $"Created via batch operation",
-                    fireTimeInSeconds = 20 + (i * 5), // Staggered times
+                    title = $"Thông báo hàng loạt #{i + 1}",
+                    body = $"Được tạo qua thao tác hàng loạt",
+                    fireTimeInSeconds = 20 + (i * 5), // Thời gian lệch nhau
                     identifier = $"batch_notif_{DateTime.Now:yyyyMMdd}_{i}",
                     groupKey = "batch_group",
                     smallIcon = "icon_small",
@@ -241,17 +246,17 @@ public class NotificationServicesDemo : MonoBehaviour
             }
 
             NotificationServices.Instance.SendNotificationBatch(notifications);
-            ShowStatus($"✅ Batch of {notifications.Count} notifications scheduled!");
+            ShowStatus($"Đã lập lịch {notifications.Count} thông báo hàng loạt!");
         }
         catch (Exception ex)
         {
-            ShowStatus($"❌ Error: {ex.Message}");
+            ShowStatus($"Lỗi: {ex.Message}");
             Debug.LogError(ex);
         }
     }
 
     /// <summary>
-    /// Demo: Return Notification - scheduled when app is backgrounded
+    /// Demo: Thông báo trở lại - được lập lịch khi ứng dụng bị đưa vào nền
     /// </summary>
     public void TestReturnNotification()
     {
@@ -260,8 +265,8 @@ public class NotificationServicesDemo : MonoBehaviour
             var config = new NotificationServices.ReturnNotificationConfig
             {
                 enabled = true,
-                title = "We miss you! 🎮",
-                body = "Come back and claim your daily rewards!",
+                title = "Chúng tôi nhớ bạn!",
+                body = "Quay lại và nhận phần thưởng hàng ngày của bạn!",
                 hoursBeforeNotification = 24,
                 repeating = false,
                 repeatInterval = NotificationServices.RepeatInterval.None,
@@ -269,95 +274,95 @@ public class NotificationServicesDemo : MonoBehaviour
             };
 
             NotificationServices.Instance.ConfigureReturnNotification(config);
-            ShowStatus("✅ Return notification configured! (Will trigger when app backgrounded for 24h)");
+            ShowStatus("Đã cấu hình thông báo trở lại! (Sẽ kích hoạt khi app bị đưa vào nền 24h)");
         }
         catch (Exception ex)
         {
-            ShowStatus($"❌ Error: {ex.Message}");
+            ShowStatus($"Lỗi: {ex.Message}");
             Debug.LogError(ex);
         }
     }
 
     /// <summary>
-    /// Demo: Group management - cancel notifications by group
+    /// Demo: Quản lý nhóm - hủy thông báo theo nhóm
     /// </summary>
     public void TestGroupManagement()
     {
         try
         {
-            // Schedule several notifications with same group
+            // Lập lịch một số thông báo với cùng nhóm
             for (int i = 0; i < 3; i++)
             {
                 NotificationServices.Instance.SendNotification(
-                    $"Group Notification {i + 1}",
-                    "Part of test group",
+                    $"Thông báo nhóm {i + 1}",
+                    "Một phần của nhóm kiểm tra",
                     30,
                     $"group_test_{i}"
                 );
             }
 
-            ShowStatus("✅ Group notifications scheduled! (3 notifications in 'test_group')");
+            ShowStatus("Đã lập lịch thông báo nhóm! (3 thông báo trong 'test_group')");
         }
         catch (Exception ex)
         {
-            ShowStatus($"❌ Error: {ex.Message}");
+            ShowStatus($"Lỗi: {ex.Message}");
             Debug.LogError(ex);
         }
     }
 
     /// <summary>
-    /// Demo: Repeating notifications
+    /// Demo: Thông báo lặp lại
     /// </summary>
     public void TestRepeatingNotifications()
     {
         try
         {
             NotificationServices.Instance.SendRepeatingNotification(
-                "Daily Reminder",
-                "Check your progress!",
-                3600, // 1 hour from now
+                "Nhắc nhở hàng ngày",
+                "Kiểm tra tiến độ của bạn!",
+                3600, // Cách 1 giờ từ bây giờ
                 NotificationServices.RepeatInterval.Daily,
                 "daily_reminder"
             );
 
-            ShowStatus("✅ Daily repeating notification scheduled!");
+            ShowStatus("Đã lập lịch thông báo lặp lại hàng ngày!");
         }
         catch (Exception ex)
         {
-            ShowStatus($"❌ Error: {ex.Message}");
+            ShowStatus($"Lỗi: {ex.Message}");
             Debug.LogError(ex);
         }
     }
 
     /// <summary>
-    /// Demo: iOS Badge management
+    /// Demo: Quản lý Badge iOS
     /// </summary>
     public void TestBadgeManagement()
     {
         try
         {
             #if UNITY_IOS
-            // Set badge count
+            // Đặt số badge
             int count = 5;
             NotificationServices.Instance.SetBadgeCount(count);
-            ShowStatus($"✅ iOS Badge set to {count}");
+            ShowStatus($"iOS Badge được đặt thành {count}");
 
-            // Enable auto-increment
+            // Bật tự động tăng
             NotificationServices.Instance.AutoIncrementBadge = true;
-            ShowStatus("✅ Auto-increment badge enabled");
+            ShowStatus("Đã bật tự động tăng badge");
             #else
-            ShowStatus("⏭️ Badge management is iOS-only");
+            ShowStatus("Quản lý Badge chỉ dành cho iOS");
             #endif
         }
         catch (Exception ex)
         {
-            ShowStatus($"❌ Error: {ex.Message}");
+            ShowStatus($"Lỗi: {ex.Message}");
             Debug.LogError(ex);
         }
     }
 
     /// <summary>
-    /// Demo: Android Channel Configuration
+    /// Demo: Cấu hình Android Channel
     /// </summary>
     public void TestAndroidChannelConfig()
     {
@@ -371,18 +376,18 @@ public class NotificationServicesDemo : MonoBehaviour
                 EnableLights = true,
                 EnableShowBadge = true,
                 CanBypassDnd = false,
-                Description = "Demo notification channel"
+                Description = "Kênh thông báo demo"
             };
 
             NotificationServices.Instance.SetAndroidChannelConfig(config);
-            ShowStatus("✅ Android channel configured!");
+            ShowStatus("Đã cấu hình kênh Android!");
             #else
-            ShowStatus("⏭️ Channel config is Android-only");
+            ShowStatus("Cấu hình kênh chỉ dành cho Android");
             #endif
         }
         catch (Exception ex)
         {
-            ShowStatus($"❌ Error: {ex.Message}");
+            ShowStatus($"Lỗi: {ex.Message}");
             Debug.LogError(ex);
         }
     }
@@ -392,50 +397,50 @@ public class NotificationServicesDemo : MonoBehaviour
     #region Utility Actions
 
     /// <summary>
-    /// Cancel all scheduled notifications
+    /// Hủy tất cả thông báo đã lập lịch
     /// </summary>
     public void CancelAllNotifications()
     {
         try
         {
             NotificationServices.Instance.CancelAllScheduledNotifications();
-            ShowStatus("✅ All scheduled notifications cancelled");
+            ShowStatus("Đã hủy tất cả thông báo đã lập lịch");
             UpdateStatus();
         }
         catch (Exception ex)
         {
-            ShowStatus($"❌ Error: {ex.Message}");
+            ShowStatus($"Lỗi: {ex.Message}");
         }
     }
 
     /// <summary>
-    /// Request notification permission
+    /// Yêu cầu quyền thông báo
     /// </summary>
     public async void RequestPermission()
     {
         try
         {
-            ShowStatus("⏳ Requesting permission...");
+            ShowStatus("Đang yêu cầu quyền...");
             
             bool granted = await NotificationServices.Instance.RequestPermissionAsync();
             
             if (granted)
             {
-                ShowStatus("✅ Permission granted!");
+                ShowStatus("Đã cấp quyền!");
             }
             else
             {
-                ShowStatus("❌ Permission denied");
+                ShowStatus("Quyền bị từ chối");
             }
         }
         catch (Exception ex)
         {
-            ShowStatus($"❌ Error: {ex.Message}");
+            ShowStatus($"Lỗi: {ex.Message}");
         }
     }
 
     /// <summary>
-    /// Clear iOS badge
+    /// Xóa badge iOS
     /// </summary>
     public void ClearBadge()
     {
@@ -443,17 +448,17 @@ public class NotificationServicesDemo : MonoBehaviour
         {
             #if UNITY_IOS
             NotificationServices.Instance.SetBadgeCount(0);
-            ShowStatus("✅ Badge cleared");
+            ShowStatus("Đã xóa badge");
             #endif
         }
         catch (Exception ex)
         {
-            ShowStatus($"❌ Error: {ex.Message}");
+            ShowStatus($"Lỗi: {ex.Message}");
         }
     }
 
     /// <summary>
-    /// Display performance metrics
+    /// Hiển thị các thông số hiệu năng
     /// </summary>
     public void ShowMetrics()
     {
@@ -461,31 +466,29 @@ public class NotificationServicesDemo : MonoBehaviour
         {
             var metrics = NotificationServices.Instance.GetPerformanceMetrics();
             
-            string metricsStr = $@"📊 Performance Metrics:
-Total Scheduled: {metrics.TotalScheduled}
-Total Cancelled: {metrics.TotalCancelled}
-Total Errors: {metrics.TotalErrors}
+            string metricsStr = $@"Thông số hiệu năng:
+Tổng đã lập lịch: {metrics.TotalScheduled}
+Tổng đã hủy: {metrics.TotalCancelled}
+Tổng lỗi: {metrics.TotalErrors}
 Pool Hits: {metrics.PoolHits}
 Pool Misses: {metrics.PoolMisses}
-Pool Hit Rate: {(metrics.PoolHits + metrics.PoolMisses > 0 ? (metrics.PoolHits * 100f / (metrics.PoolHits + metrics.PoolMisses)): 0):F1}%
+Tỷ lệ pool hit: {(metrics.PoolHits + metrics.PoolMisses > 0 ? (metrics.PoolHits * 100f / (metrics.PoolHits + metrics.PoolMisses)): 0):F1}%
 Main Thread Drops: {metrics.MainThreadDrops}
-Avg Save Time: {metrics.AverageSaveTimeMs:F2}ms
-Current Memory: {metrics.CurrentMemoryUsage / 1024}KB
-Peak Memory: {metrics.PeakMemoryUsage / 1024}KB";
-
-            ShowStatus(metricsStr);
+Thời gian lưu trung bình: {metrics.AverageSaveTimeMs:F2}ms
+Bộ nhớ hiện tại: {metrics.CurrentMemoryUsage / 1024}KB
+Bộ nhớ đỉnh: {metrics.PeakMemoryUsage / 1024}KB";
             
             if (metricsText != null)
                 metricsText.text = metricsStr;
         }
         catch (Exception ex)
         {
-            ShowStatus($"❌ Error: {ex.Message}");
+            ShowStatus($"Lỗi: {ex.Message}");
         }
     }
 
     /// <summary>
-    /// Update status display with current notification count
+    /// Cập nhật hiển thị trạng thái với số lượng thông báo hiện tại
     /// </summary>
     private void UpdateStatus()
     {
@@ -494,15 +497,15 @@ Peak Memory: {metrics.PeakMemoryUsage / 1024}KB";
             int count = NotificationServices.Instance.GetScheduledNotificationCount();
             bool hasPermission = NotificationServices.Instance.HasNotificationPermission();
             
-            string status = $"📱 Notifications: {count} scheduled | " +
-                          $"Permission: {(hasPermission ? "✅" : "❌")}";
+            string status = $"Thông báo: {count} đã lập lịch | " +
+                          $"Quyền: {(hasPermission ? "Có" : "Không")}";
             
             if (statusText != null)
                 statusText.text = status;
         }
         catch (Exception ex)
         {
-            Debug.LogError($"Failed to update status: {ex.Message}");
+            Debug.LogError($"Không thể cập nhật trạng thái: {ex.Message}");
         }
     }
 
@@ -519,7 +522,7 @@ Peak Memory: {metrics.PeakMemoryUsage / 1024}KB";
 
     private void HandleError(string operation, Exception ex)
     {
-        string message = $"❌ Error in {operation}: {ex.Message}";
+        string message = $"Lỗi trong {operation}: {ex.Message}";
         Debug.LogError(message);
         ShowStatus(message);
     }
@@ -549,9 +552,9 @@ Peak Memory: {metrics.PeakMemoryUsage / 1024}KB";
 
     private void Update()
     {
-        // DISABLED: Using Input System instead of old Input class
-        // Keyboard shortcuts for quick testing - removed to avoid Input System conflict
-        // Use UI buttons instead for testing
+        // TẮT: Sử dụng Input System thay vì lớp Input cũ
+        // Phím tắt để kiểm tra nhanh - đã loại bỏ để tránh xung đột Input System
+        // Sử dụng nút UI thay thế để kiểm tra
         /*
         if (Input.GetKeyDown(KeyCode.B))
         {
@@ -590,20 +593,20 @@ Peak Memory: {metrics.PeakMemoryUsage / 1024}KB";
 
     private void OnGUI()
     {
-        // DISABLED: Keyboard shortcuts removed due to Input System conflict
-        // Use UI buttons instead for testing
+        // TẮT: Phím tắt bị loại bỏ do xung đột Input System
+        // Sử dụng nút UI thay thế để kiểm tra
         /*
-        // Display keyboard shortcuts
+        // Hiển thị phím tắt
         GUI.Label(new Rect(10, 10, 500, 200), 
-            "⌨️ Keyboard Shortcuts:\n" +
-            "B - Basic Notification\n" +
+            "Phím tắt:\n" +
+            "B - Thông báo cơ bản\n" +
             "F - Fluent Builder\n" +
             "A - Async API\n" +
-            "R - Return Notification\n" +
-            "G - Group Management\n" +
-            "P - Request Permission\n" +
-            "M - Show Metrics\n" +
-            "C - Cancel All");
+            "R - Thông báo trở lại\n" +
+            "G - Quản lý nhóm\n" +
+            "P - Yêu cầu quyền\n" +
+            "M - Hiển thị thông số\n" +
+            "C - Hủy tất cả");
         */
     }
 
