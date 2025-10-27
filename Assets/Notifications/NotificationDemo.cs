@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.UI;
 using System;
+using System.Linq;
 
 public class NotificationDemo : MonoBehaviour
 {
@@ -17,6 +18,11 @@ public class NotificationDemo : MonoBehaviour
     public Text statusText;
 
     private NotificationServices notificationService;
+
+    private void Awake()
+    {
+        Application.targetFrameRate = 60;
+    }
 
     void Start()
     {
@@ -43,49 +49,91 @@ public class NotificationDemo : MonoBehaviour
         btnLogDebugInfo.onClick.AddListener(LogDebugInfo);
     }
 
-    void SendSimpleNotification()
+    async void SendSimpleNotification()
     {
-        // Gửi thông báo sau 10 giây
-        notificationService.SendNotification("Thông Báo Đơn Giản", "Đây là nội dung thông báo", 10);
-        UpdateStatusText("Simple notification scheduled");
+        try
+        {
+            // Sử dụng async version để có thể cancel nếu cần
+            bool success = await notificationService.SendNotificationAsync("Thông Báo Đơn Giản", "Đây là nội dung thông báo", 1);
+            UpdateStatusText(success ? "Simple notification scheduled" : "Failed to schedule notification");
+            if (success) Debug.Log("[NotificationDemo] Simple notification scheduled successfully");
+        }
+        catch (System.Exception ex)
+        {
+            UpdateStatusText($"Error scheduling notification: {ex.Message}");
+            Debug.LogError($"[NotificationDemo] Failed to schedule simple notification: {ex.Message}");
+        }
     }
 
-    void SendRepeatingNotification()
+    async void SendRepeatingNotification()
     {
-        // Gửi thông báo lặp lại hàng ngày
-        notificationService.SendRepeatingNotification("Thông Báo Lặp Lại", "Thông báo này sẽ lặp lại hàng ngày",
-            86400, // 1 ngày = 86400 giây
-            NotificationServices.RepeatInterval.Daily);
-        UpdateStatusText("Repeating notification scheduled");
+        try
+        {
+            // Sử dụng async version
+            var data = new NotificationServices.NotificationData
+            {
+                title = "Thông Báo Lặp Lại",
+                body = "Thông báo này sẽ lặp lại hàng ngày",
+                fireTimeInSeconds = 86400, // 1 ngày = 86400 giây
+                repeats = true,
+                repeatInterval = NotificationServices.RepeatInterval.Daily,
+                identifier = Guid.NewGuid().ToString()
+            };
+
+            bool success = await notificationService.SendNotificationAsync(data);
+            UpdateStatusText(success ? "Repeating notification scheduled" : "Failed to schedule repeating notification");
+        }
+        catch (System.Exception ex)
+        {
+            UpdateStatusText($"Error scheduling repeating notification: {ex.Message}");
+        }
     }
 
-    void SendNotificationWithBuilder()
+    async void SendNotificationWithBuilder()
     {
-        // Sử dụng fluent builder để tạo thông báo
-        string identifier = Guid.NewGuid().ToString();
-        notificationService.CreateNotification()
-            .WithTitle("Thông Báo Từ Builder")
-            .WithBody("Được tạo bằng notification builder")
-            .WithGroup("demo_group")
-            .WithIdentifier(identifier)
-            .In(TimeSpan.FromSeconds(30))
-            .Schedule();
-        UpdateStatusText($"Builder notification scheduled (ID: {identifier})");
+        try
+        {
+            // Sử dụng fluent builder với async
+            string identifier = Guid.NewGuid().ToString();
+            bool success = await notificationService.CreateNotification()
+                .WithTitle("Thông Báo Từ Builder")
+                .WithBody("Được tạo bằng notification builder")
+                .WithGroup("demo_group")
+                .WithIdentifier(identifier)
+                .In(1)  // Đơn giản hơn TimeSpan.FromSeconds(1)
+                .ScheduleAsync();
+
+            if (success)
+                UpdateStatusText($"Builder notification scheduled (ID: {identifier})");
+            else
+                UpdateStatusText("Failed to schedule builder notification");
+        }
+        catch (System.Exception ex)
+        {
+            UpdateStatusText($"Error scheduling builder notification: {ex.Message}");
+        }
     }
 
     void ConfigureReturnNotification()
     {
-        // Cấu hình thông báo quay lại ứng dụng
-        var returnConfig = new NotificationServices.ReturnNotificationConfig
+        try
         {
-            enabled = true,
-            title = "Chúng tôi nhớ bạn!",
-            body = "Quay lại và nhận phần thưởng",
-            hoursBeforeNotification = 24
-        };
+            // Cấu hình thông báo quay lại ứng dụng
+            var returnConfig = new NotificationServices.ReturnNotificationConfig
+            {
+                enabled = true,
+                title = "Chúng tôi nhớ bạn!",
+                body = "Quay lại và nhận phần thưởng",
+                hoursBeforeNotification = 24
+            };
 
-        notificationService.ConfigureReturnNotification(returnConfig);
-        UpdateStatusText("Return notification configured");
+            notificationService.ConfigureReturnNotification(returnConfig);
+            UpdateStatusText("Return notification configured");
+        }
+        catch (System.Exception ex)
+        {
+            UpdateStatusText($"Error configuring return notification: {ex.Message}");
+        }
     }
 
     void HandleNotificationEvent(NotificationServices.NotificationEvent evt)
@@ -108,13 +156,30 @@ public class NotificationDemo : MonoBehaviour
         }
     }
 
-    void CancelAllNotifications()
+    async void CancelAllNotifications()
     {
-        notificationService.CancelAllNotifications();
-        UpdateStatusText("Tất cả thông báo đã bị hủy");
+        try
+        {
+            // Cancel all scheduled notifications
+            var scheduledIds = notificationService.GetAllScheduledIdentifiers();
+            if (scheduledIds.Count > 0)
+            {
+                await notificationService.CancelNotificationBatchAsync(scheduledIds.ToList());
+                Debug.Log($"[NotificationDemo] Cancelled {scheduledIds.Count} scheduled notifications");
+            }
+
+            // Cancel all displayed notifications
+            notificationService.CancelAllDisplayedNotifications();
+
+            UpdateStatusText($"Tất cả thông báo đã bị hủy ({scheduledIds.Count} scheduled)");
+        }
+        catch (System.Exception ex)
+        {
+            UpdateStatusText($"Error canceling notifications: {ex.Message}");
+        }
     }
 
-    void CheckNotificationStatus()
+    async void CheckNotificationStatus()
     {
         string identifier = inputNotificationIdentifier.text;
         if (string.IsNullOrEmpty(identifier))
@@ -123,9 +188,16 @@ public class NotificationDemo : MonoBehaviour
             return;
         }
 
-        // Kiểm tra trạng thái của một thông báo cụ thể
-        string status = notificationService.GetNotificationStatus(identifier);
-        UpdateStatusText($"Trạng thái thông báo {identifier}: {status}");
+        try
+        {
+            // Kiểm tra trạng thái của một thông báo cụ thể
+            string status = notificationService.GetNotificationStatus(identifier);
+            UpdateStatusText($"Trạng thái thông báo {identifier}: {status}");
+        }
+        catch (System.Exception ex)
+        {
+            UpdateStatusText($"Error checking notification status: {ex.Message}");
+        }
     }
 
     void LogDebugInfo()
@@ -145,9 +217,9 @@ public class NotificationDemo : MonoBehaviour
         Debug.Log($"[NotificationDemo] {message}");
     }
 
-    void OnApplicationQuit()
+    void OnDestroy()
     {
-        // Hủy đăng ký sự kiện khi thoát
+        // Hủy đăng ký sự kiện khi object bị destroy
         if (notificationService != null)
         {
             notificationService.OnNotificationEvent -= HandleNotificationEvent;
