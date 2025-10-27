@@ -361,10 +361,20 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         public int PoolMisses;
         public double AverageSaveTimeMs;
         public DateTime StartTime;
-        
+        public long CurrentMemoryUsage;
+        public long PeakMemoryUsage;
+
         public PerformanceMetrics()
         {
             StartTime = DateTime.UtcNow;
+            UpdateMemory();
+        }
+
+        public void UpdateMemory()
+        {
+            CurrentMemoryUsage = GC.GetTotalMemory(false);
+            if (CurrentMemoryUsage > PeakMemoryUsage)
+                PeakMemoryUsage = CurrentMemoryUsage;
         }
         
         public void Reset()
@@ -372,6 +382,9 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             TotalScheduled = TotalCancelled = TotalErrors = PoolHits = PoolMisses = 0;
             AverageSaveTimeMs = 0;
             StartTime = DateTime.UtcNow;
+            CurrentMemoryUsage = 0;
+            PeakMemoryUsage = 0;
+            UpdateMemory();
         }
     }
 
@@ -473,6 +486,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         public const float SaveDebounce = 0.5f;
         public const float DateTimeCache = 60f;
         public const float CircuitBreaker = 60f;
+        public const int AsyncOperationTimeoutSeconds = 5;  // Timeout for async operations
     }
 
     private static class RetryConfig
@@ -504,7 +518,8 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     private bool isInitialized;
     private bool disposed;
     
-    private Dictionary<string, int> scheduledNotificationIds = new Dictionary<string, int>();
+    // Simplified: Single source of truth with timestamp for insertion order
+    private Dictionary<string, (int id, long timestamp)> scheduledNotificationIds = new Dictionary<string, (int id, long timestamp)>();
     private readonly ReaderWriterLockSlim dictLock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
     
     private Dictionary<string, HashSet<string>> notificationGroups = new Dictionary<string, HashSet<string>>();
@@ -556,7 +571,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     private bool circuitBreakerOpen;
     private readonly object circuitLock = new object();
     
-    private readonly Queue<string> identifierQueue = new Queue<string>(Limits.MaxTrackedNotifications);
+    // Removed identifierQueue - using timestamp-based approach for insertion order
     
 #if UNITY_ANDROID
     private volatile bool hasAndroidPermission;
@@ -578,10 +593,24 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         GC.SuppressFinalize(this);
     }
 
-    private void Dispose(bool disposing)
+    private async void Dispose(bool disposing)
     {
         if (disposed) return;
-        if (disposing) CleanupResources();
+        if (disposing)
+        {
+            // Add timeout to prevent hanging during cleanup
+            var cleanupTask = Task.Run(() => CleanupResources());
+            if (await Task.WhenAny(cleanupTask, Task.Delay(1000)) == cleanupTask)
+            {
+                // Cleanup completed in time
+                try { await cleanupTask; }
+                catch (Exception e) { Debug.LogError($"[NotificationServices] Cleanup error: {e.Message}"); }
+            }
+            else
+            {
+                Debug.LogWarning("[NotificationServices] Cleanup timed out during disposal");
+            }
+        }
         disposed = true;
     }
 
@@ -636,7 +665,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     private void OnApplicationQuit()
     {
         applicationQuitting = true;
-        _ = FlushSaveAsync().ConfigureAwait(false);
+        _ = FlushSaveAsync();  // ConfigureAwait not needed in Unity - sync context required
     }
 
     private void OnDestroy()
@@ -681,6 +710,9 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 
     private void RecordError(string operation, Exception ex)
     {
+        // Update metrics first to avoid nested locks
+        lock (metricsLock) { metrics.TotalErrors++; }
+
         lock (circuitLock)
         {
             consecutiveErrors++;
@@ -691,7 +723,6 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
                 Debug.LogError($"[NotificationServices] Circuit breaker OPEN after {consecutiveErrors} errors");
             }
         }
-        lock (metricsLock) { metrics.TotalErrors++; }
         DispatchErrorEvent(operation, ex);
     }
 
@@ -817,7 +848,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         }
         
         if (!applicationQuitting && !disposed)
-            _ = FlushSaveAsync().ConfigureAwait(false);
+            _ = FlushSaveAsync();  // ConfigureAwait not needed in Unity - sync context required
     }
 
     private async Task FlushSaveAsync()
@@ -873,7 +904,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     {
         try
         {
-            List<KeyValuePair<string, int>> snapshot;
+            List<KeyValuePair<string, (int id, long timestamp)>> snapshot;
             dictLock.EnterReadLock();
             try { snapshot = scheduledNotificationIds.ToList(); }
             finally { dictLock.ExitReadLock(); }
@@ -887,7 +918,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             foreach (var kvp in snapshot)
             {
                 wrapper.identifiers.Add(kvp.Key);
-                wrapper.ids.Add(kvp.Value);
+                wrapper.ids.Add(kvp.Value.id);  // Extract id from tuple
             }
             
             var json = JsonUtility.ToJson(wrapper);
@@ -914,14 +945,14 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             try
             {
                 scheduledNotificationIds.Clear();
-                identifierQueue.Clear();
                 
                 int count = Mathf.Min(wrapper.identifiers.Count, wrapper.ids.Count);
+                long baseTimestamp = DateTime.UtcNow.Ticks;
                 for (int i = 0; i < count; i++)
                 {
-                    var id = wrapper.identifiers[i];
-                    scheduledNotificationIds[id] = wrapper.ids[i];
-                    identifierQueue.Enqueue(id);
+                    var identifier = wrapper.identifiers[i];
+                    // Preserve original order with incremental timestamps
+                    scheduledNotificationIds[identifier] = (wrapper.ids[i], baseTimestamp + i);
                 }
             }
             finally { dictLock.ExitWriteLock(); }
@@ -936,8 +967,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             dictLock.EnterWriteLock();
             try
             {
-                scheduledNotificationIds.Clear(); 
-                identifierQueue.Clear();
+                scheduledNotificationIds.Clear();
             }
             finally { dictLock.ExitWriteLock(); }
         }
@@ -963,7 +993,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
                 
                 try
                 {
-                    var status = AndroidNotificationCenter.CheckScheduledNotificationStatus(kvp.Value);
+                    var status = AndroidNotificationCenter.CheckScheduledNotificationStatus(kvp.Value.id);
                     if (status == NotificationStatus.Unavailable || status == NotificationStatus.Unknown)
                         toRemove.Add(kvp.Key);
                 }
@@ -1067,7 +1097,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     {
         bool wasHit = false;
         NotificationData data = null;
-        
+
         lock (poolLock)
         {
             if (notificationDataPool.Count > 0)
@@ -1076,15 +1106,23 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
                 wasHit = true;
             }
         }
-        
+
         // Update metrics outside of poolLock to avoid nested locks
         if (wasHit)
         {
-            lock (metricsLock) { metrics.PoolHits++; }
+            lock (metricsLock)
+            {
+                metrics.PoolHits++;
+                metrics.UpdateMemory(); // Track memory usage after pool hit
+            }
             return data;
         }
-        
-        lock (metricsLock) { metrics.PoolMisses++; }
+
+        lock (metricsLock)
+        {
+            metrics.PoolMisses++;
+            metrics.UpdateMemory(); // Track memory usage after pool miss
+        }
         return new NotificationData();
     }
 
@@ -1320,6 +1358,17 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     }
     #endregion
 
+    #region Lifecycle Validation
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ThrowIfDisposed()
+    {
+        if (disposed || applicationQuitting)
+            throw new ObjectDisposedException(nameof(NotificationServices),
+                "Cannot perform operation - service is disposed or application is quitting");
+    }
+
+    #endregion
+    
     #region Platform Validation
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool CanScheduleMore()
@@ -1752,36 +1801,23 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         dictLock.EnterWriteLock();
         try
         {
-            // Safety check: ensure queue and dict are in sync
-            while (identifierQueue.Count > scheduledNotificationIds.Count)
-            {
-                identifierQueue.TryDequeue(out _);
-            }
-            
+            // Remove oldest if at limit (simplified with timestamp approach)
             if (scheduledNotificationIds.Count >= Limits.MaxTrackedNotifications)
             {
-                if (identifierQueue.TryDequeue(out oldestKey))
-                {
-                    scheduledNotificationIds.Remove(oldestKey);
-                    LogWarning("Max tracked notifications reached, removing oldest", oldestKey);
+                var oldest = scheduledNotificationIds
+                    .OrderBy(kvp => kvp.Value.timestamp)
+                    .FirstOrDefault();
                     
+                if (!string.IsNullOrEmpty(oldest.Key))
+                {
+                    scheduledNotificationIds.Remove(oldest.Key);
+                    oldestKey = oldest.Key;
+                    LogWarning("Max tracked notifications reached, removing oldest", oldestKey);
                 }
             }
             
-            // Remove duplicate if exists
-            if (scheduledNotificationIds.ContainsKey(identifier))
-                scheduledNotificationIds.Remove(identifier);
-            
-            scheduledNotificationIds[identifier] = id;
-            identifierQueue.Enqueue(identifier);
-            
-            // Final safety check
-            if (identifierQueue.Count > Limits.MaxTrackedNotifications)
-            {
-                Debug.LogError("[NotificationServices] Queue size exceeded limit, forcing cleanup");
-                while (identifierQueue.Count > scheduledNotificationIds.Count)
-                    identifierQueue.TryDequeue(out _);
-            }
+            // Update or add with current timestamp
+            scheduledNotificationIds[identifier] = (id, DateTime.UtcNow.Ticks);
         }
         finally { dictLock.ExitWriteLock(); }
         
@@ -1821,13 +1857,12 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             }
         }
 
-        _ = FlushSaveAsync().ConfigureAwait(false);
+        _ = FlushSaveAsync();  // ConfigureAwait not needed in Unity - sync context required
         
         dictLock.EnterWriteLock();
         try
         { 
-            scheduledNotificationIds.Clear(); 
-            identifierQueue.Clear();
+            scheduledNotificationIds.Clear();
         }
         finally 
         { 
@@ -1991,13 +2026,17 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     {
         if (string.IsNullOrEmpty(identifier)) return;
         
-        int id;
+        int id = 0;
         bool found;
         dictLock.EnterWriteLock();
         try
         {
-            found = scheduledNotificationIds.TryGetValue(identifier, out id);
-            if (found) scheduledNotificationIds.Remove(identifier);
+            found = scheduledNotificationIds.TryGetValue(identifier, out var value);
+            if (found)
+            {
+                id = value.id;
+                scheduledNotificationIds.Remove(identifier);
+            }
         }
         finally { dictLock.ExitWriteLock(); }
         
@@ -2033,8 +2072,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             dictLock.EnterWriteLock();
             try
             { 
-                scheduledNotificationIds.Clear(); 
-                identifierQueue.Clear();
+                scheduledNotificationIds.Clear();
             }
             finally { dictLock.ExitWriteLock(); }
             
@@ -2149,6 +2187,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     {
         lock (metricsLock)
         {
+            metrics.UpdateMemory(); // Update memory stats before returning
             return new PerformanceMetrics
             {
                 TotalScheduled = metrics.TotalScheduled,
@@ -2157,7 +2196,9 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
                 PoolHits = metrics.PoolHits,
                 PoolMisses = metrics.PoolMisses,
                 AverageSaveTimeMs = metrics.AverageSaveTimeMs,
-                StartTime = metrics.StartTime
+                StartTime = metrics.StartTime,
+                CurrentMemoryUsage = metrics.CurrentMemoryUsage,
+                PeakMemoryUsage = metrics.PeakMemoryUsage
             };
         }
     }
@@ -2171,6 +2212,11 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     #region Async API
     public async Task<bool> SendNotificationAsync(string title, string body, int fireTimeInSeconds, string identifier = null, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(Timeouts.AsyncOperationTimeoutSeconds));
+
         var tcs = new TaskCompletionSource<bool>();
         RunOnMainThread(() =>
         {
@@ -2181,13 +2227,28 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             }
             catch (Exception e) { tcs.TrySetException(e); }
         });
-        
-        using (ct.Register(() => tcs.TrySetCanceled()))
-            return await tcs.Task;
+
+        using (cts.Token.Register(() => tcs.TrySetCanceled()))
+        {
+            try
+            {
+                return await tcs.Task;
+            }
+            catch (OperationCanceledException)
+            {
+                LogWarning("SendNotificationAsync timed out after", Timeouts.AsyncOperationTimeoutSeconds);
+                throw;
+            }
+        }
     }
 
     public async Task<bool> SendNotificationAsync(NotificationData data, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(Timeouts.AsyncOperationTimeoutSeconds));
+
         var tcs = new TaskCompletionSource<bool>();
         RunOnMainThread(() =>
         {
@@ -2198,13 +2259,28 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             }
             catch (Exception e) { tcs.TrySetException(e); }
         });
-        
-        using (ct.Register(() => tcs.TrySetCanceled()))
-            return await tcs.Task;
+
+        using (cts.Token.Register(() => tcs.TrySetCanceled()))
+        {
+            try
+            {
+                return await tcs.Task;
+            }
+            catch (OperationCanceledException)
+            {
+                LogWarning("SendNotificationAsync (data) timed out after", Timeouts.AsyncOperationTimeoutSeconds);
+                throw;
+            }
+        }
     }
 
     public async Task CancelNotificationAsync(string identifier, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(Timeouts.AsyncOperationTimeoutSeconds));
+
         var tcs = new TaskCompletionSource<bool>();
         RunOnMainThread(() =>
         {
@@ -2215,13 +2291,28 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             }
             catch (Exception e) { tcs.TrySetException(e); }
         });
-        
-        using (ct.Register(() => tcs.TrySetCanceled()))
-            await tcs.Task;
+
+        using (cts.Token.Register(() => tcs.TrySetCanceled()))
+        {
+            try
+            {
+                await tcs.Task;
+            }
+            catch (OperationCanceledException)
+            {
+                LogWarning("CancelNotificationAsync timed out after", Timeouts.AsyncOperationTimeoutSeconds);
+                throw;
+            }
+        }
     }
 
     public async Task<int> GetScheduledNotificationCountAsync(CancellationToken ct = default)
     {
+        ThrowIfDisposed();
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(Timeouts.AsyncOperationTimeoutSeconds));
+
         var tcs = new TaskCompletionSource<int>();
         RunOnMainThread(() =>
         {
@@ -2232,9 +2323,19 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             }
             catch (Exception e) { tcs.TrySetException(e); }
         });
-        
-        using (ct.Register(() => tcs.TrySetCanceled()))
-            return await tcs.Task;
+
+        using (cts.Token.Register(() => tcs.TrySetCanceled()))
+        {
+            try
+            {
+                return await tcs.Task;
+            }
+            catch (OperationCanceledException)
+            {
+                LogWarning("GetScheduledNotificationCountAsync timed out after", Timeouts.AsyncOperationTimeoutSeconds);
+                throw;
+            }
+        }
     }
     #endregion
 
@@ -2243,7 +2344,7 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
     {
         SaveLastOpenTime();
         ScheduleReturnNotification();
-        _ = FlushSaveAsync().ConfigureAwait(false);
+        _ = FlushSaveAsync();  // ConfigureAwait not needed in Unity - sync context required
     }
 
     private void OnAppForegrounded()
@@ -2329,10 +2430,10 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         {
             foreach (var identifier in identifiers)
             {
-                if (scheduledNotificationIds.TryGetValue(identifier, out int id))
+                if (scheduledNotificationIds.TryGetValue(identifier, out var value))
                 {
                     scheduledNotificationIds.Remove(identifier);
-                    idsToCancel.Add((identifier, id));
+                    idsToCancel.Add((identifier, value.id));
                 }
             }
         }
@@ -2366,6 +2467,11 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 
     public async Task SendNotificationBatchAsync(List<NotificationData> notifications, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(Timeouts.AsyncOperationTimeoutSeconds));
+
         var tcs = new TaskCompletionSource<bool>();
         RunOnMainThread(() =>
         {
@@ -2376,13 +2482,28 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             }
             catch (Exception e) { tcs.TrySetException(e); }
         });
-        
-        using (ct.Register(() => tcs.TrySetCanceled()))
-            await tcs.Task;
+
+        using (cts.Token.Register(() => tcs.TrySetCanceled()))
+        {
+            try
+            {
+                await tcs.Task;
+            }
+            catch (OperationCanceledException)
+            {
+                LogWarning("SendNotificationBatchAsync timed out after", Timeouts.AsyncOperationTimeoutSeconds);
+                throw;
+            }
+        }
     }
     
     public async Task CancelNotificationBatchAsync(List<string> identifiers, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(Timeouts.AsyncOperationTimeoutSeconds));
+
         var tcs = new TaskCompletionSource<bool>();
         RunOnMainThread(() =>
         {
@@ -2393,9 +2514,19 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
             }
             catch (Exception e) { tcs.TrySetException(e); }
         });
-        
-        using (ct.Register(() => tcs.TrySetCanceled()))
-            await tcs.Task;
+
+        using (cts.Token.Register(() => tcs.TrySetCanceled()))
+        {
+            try
+            {
+                await tcs.Task;
+            }
+            catch (OperationCanceledException)
+            {
+                LogWarning("CancelNotificationBatchAsync timed out after", Timeouts.AsyncOperationTimeoutSeconds);
+                throw;
+            }
+        }
     }
     #endregion
 
@@ -2445,6 +2576,32 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
         builder.Append("===================================");
         Debug.Log(builder.ToString());
     }
+
+    /// <summary>
+    /// Logs current pool statistics for debugging object pool efficiency
+    /// </summary>
+    public void LogPoolStats()
+    {
+        lock (poolLock)
+        {
+            var builder = GetThreadLogBuilder();
+            builder.Clear();
+            builder.Append("[NotificationServices] Pool Stats:\n");
+            builder.Append("  NotificationData: ").Append(notificationDataPool.Count)
+                   .Append("/").Append(PoolSizes.NotificationData).Append('\n');
+            builder.Append("  Events: ").Append(eventPool.Count)
+                   .Append("/").Append(PoolSizes.Events);
+            Debug.Log(builder.ToString());
+        }
+        
+        // Also log metrics
+        var metrics = GetPerformanceMetrics();
+        if (metrics.PoolHits + metrics.PoolMisses > 0)
+        {
+            float hitRate = metrics.PoolHits * 100f / (metrics.PoolHits + metrics.PoolMisses);
+            Debug.Log($"[NotificationServices] Pool hit rate: {hitRate:F1}%");
+        }
+    }
     #endregion
 
     #region Extensions
@@ -2467,10 +2624,14 @@ public sealed class NotificationServices : MonoBehaviour, NotificationServices.I
 
     public string GetNotificationStatus(string identifier)
     {
-        int id;
+        int id = 0;
         bool found;
         dictLock.EnterReadLock();
-        try { found = scheduledNotificationIds.TryGetValue(identifier, out id); }
+        try
+        {
+            found = scheduledNotificationIds.TryGetValue(identifier, out var value);
+            if (found) id = value.id;
+        }
         finally { dictLock.ExitReadLock(); }
         
         if (!found) return "Not Found";
