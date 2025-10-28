@@ -1,0 +1,19 @@
+{
+    "name": "com.dmobin.tool.notifications",
+    "version": "1.0.0",
+    "displayName": "Dmobin - Tool - Notifications",
+    "description": "Local notification tool for Android and iOS.",
+    "unity": "2021.3",
+    "keywords": [
+      "Notifications",
+      "Tools"
+    ],
+    "author": {
+      "name": "LongNguyen",
+      "email": "loggzix@gmail.com"
+    },
+    "dependencies": {
+      "com.unity.mobile.notifications": "2.4.2"
+    },
+    "license": "MIT"
+  }
