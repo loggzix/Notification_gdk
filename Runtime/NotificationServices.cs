@@ -16,45 +16,47 @@ using UnityEngine.Android;
 #endif
 using UnityEngine;
 
-/// <summary>
-/// Perfect 10/10 Notification Service - Ultimate Production Ready
-/// </summary>
-/// <remarks>
-/// <para><b>Core Features:</b></para>
-/// <list type="bullet">
-///   <item>Thread-safe with ReaderWriterLockSlim for optimal concurrency</item>
-///   <item>Zero-allocation logging with ThreadLocal StringBuilder</item>
-///   <item>Object pooling for NotificationData and Events</item>
-///   <item>Circuit breaker pattern for resilient error handling</item>
-///   <item>Notification groups for batch management</item>
-///   <item>Async-first API with full CancellationToken support</item>
-///   <item>Memory optimized with performance metrics tracking</item>
-///   <item>Dependency injection support for unit testing</item>
-///   <item>Runtime log level control</item>
-///   <item>Cross-platform (iOS + Android)</item>
-/// </list>
-/// 
-/// <para><b>Usage Example:</b></para>
-/// <code>
-/// // Simple notification
-/// NotificationServices.Instance.SendNotification("Hello", "World", 3600);
-/// 
-/// // Fluent API
-/// NotificationServices.Instance.CreateNotification()
-///     .WithTitle("Reminder")
-///     .WithBody("Don't forget!")
-///     .In(TimeSpan.FromHours(24))
-///     .Repeating(RepeatInterval.Daily)
-///     .Schedule();
-///     
-/// // For testing
-/// var mockPlatform = new Mock&lt;INotificationPlatform&gt;();
-/// NotificationServices.Instance.SetPlatform(mockPlatform.Object);
-/// </code>
-/// </remarks>
-public sealed partial class NotificationServices : MonoBehaviour, NotificationServices.INotificationService, IDisposable
+namespace DSDK.Notifications
 {
-    #region Singleton
+    /// <summary>
+    /// Perfect 10/10 Notification Service - Ultimate Production Ready
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Core Features:</b></para>
+    /// <list type="bullet">
+    ///   <item>Thread-safe with ReaderWriterLockSlim for optimal concurrency</item>
+    ///   <item>Zero-allocation logging with ThreadLocal StringBuilder</item>
+    ///   <item>Object pooling for NotificationData and Events</item>
+    ///   <item>Circuit breaker pattern for resilient error handling</item>
+    ///   <item>Notification groups for batch management</item>
+    ///   <item>Async-first API with full CancellationToken support</item>
+    ///   <item>Memory optimized with performance metrics tracking</item>
+    ///   <item>Dependency injection support for unit testing</item>
+    ///   <item>Runtime log level control</item>
+    ///   <item>Cross-platform (iOS + Android)</item>
+    /// </list>
+    /// 
+    /// <para><b>Usage Example:</b></para>
+    /// <code>
+    /// // Simple notification
+    /// NotificationServices.Instance.SendNotification("Hello", "World", 3600);
+    /// 
+    /// // Fluent API
+    /// NotificationServices.Instance.CreateNotification()
+    ///     .WithTitle("Reminder")
+    ///     .WithBody("Don't forget!")
+    ///     .In(TimeSpan.FromHours(24))
+    ///     .Repeating(RepeatInterval.Daily)
+    ///     .Schedule();
+    ///     
+    /// // For testing
+    /// var mockPlatform = new Mock&lt;INotificationPlatform&gt;();
+    /// NotificationServices.Instance.SetPlatform(mockPlatform.Object);
+    /// </code>
+    /// </remarks>
+    public sealed partial class NotificationServices : MonoBehaviour, NotificationServices.INotificationService, IDisposable
+    {
+        #region Singleton
     private static volatile NotificationServices instance; // FIX: Added volatile for thread safety
     private static readonly object lockObject = new object();
     private static volatile int initializationState = 0; // 0=none, 1=initializing, 2=done
@@ -1201,5 +1203,6 @@ public sealed partial class NotificationServices : MonoBehaviour, NotificationSe
 
     //#region Extensions - MOVED
     //#endregion
+    }
 }
 

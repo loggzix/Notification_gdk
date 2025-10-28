@@ -6,12 +6,14 @@ using Unity.Notifications.Android;
 using UnityEngine;
 using UnityEngine.Android;
 
-/// <summary>
-/// Android-specific notification implementation
-/// </summary>
-public partial class NotificationServices
+namespace DSDK.Notifications
 {
-    #region Android
+    /// <summary>
+    /// Android-specific notification implementation
+    /// </summary>
+    public partial class NotificationServices
+    {
+        #region Android
     /// <summary>
     /// Gets Android SDK level using JNI (robust and cached)
     /// </summary>
@@ -272,4 +274,5 @@ public partial class NotificationServices
     #endregion
 }
 #endif
+}
 

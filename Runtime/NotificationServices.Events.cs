@@ -4,19 +4,21 @@ using System.Text;
 using System.Threading;
 using UnityEngine;
 
-/// <summary>
-/// Events, Circuit Breaker, and Logging for NotificationServices
-/// </summary>
-/// <remarks>
-/// This partial class contains:
-/// - Event Aggregator - Event dispatch system
-/// - Circuit Breaker - Error handling and resilience
-/// - ThreadLocal StringBuilder - Zero-allocation logging
-/// - Logging - Log methods (LogInfo, LogWarning, LogError)
-/// </remarks>
-public partial class NotificationServices
+namespace DSDK.Notifications
 {
-    #region ThreadLocal StringBuilder
+    /// <summary>
+    /// Events, Circuit Breaker, and Logging for NotificationServices
+    /// </summary>
+    /// <remarks>
+    /// This partial class contains:
+    /// - Event Aggregator - Event dispatch system
+    /// - Circuit Breaker - Error handling and resilience
+    /// - ThreadLocal StringBuilder - Zero-allocation logging
+    /// - Logging - Log methods (LogInfo, LogWarning, LogError)
+    /// </remarks>
+    public partial class NotificationServices
+    {
+        #region ThreadLocal StringBuilder
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static StringBuilder GetThreadLogBuilder()
     {
@@ -241,5 +243,6 @@ public partial class NotificationServices
         Debug.Log(builder);
     }
     #endregion
+    }
 }
 

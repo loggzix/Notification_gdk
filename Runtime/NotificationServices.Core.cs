@@ -14,18 +14,20 @@ using UnityEngine.Android;
 #endif
 using UnityEngine;
 
-/// <summary>
-/// Core models, constants, and interfaces for NotificationServices
-/// </summary>
-/// <remarks>
-/// This partial class contains:
-/// - Interfaces (INotificationService, INotificationPlatform)
-/// - Data Structures (NotificationData, NotificationEvent, PerformanceMetrics, etc.)
-/// - Constants (TimeConstants, Limits, PoolSizes, Timeouts, etc.)
-/// </remarks>
-public partial class NotificationServices
+namespace DSDK.Notifications
 {
-    #region Interfaces
+    /// <summary>
+    /// Core models, constants, and interfaces for NotificationServices
+    /// </summary>
+    /// <remarks>
+    /// This partial class contains:
+    /// - Interfaces (INotificationService, INotificationPlatform)
+    /// - Data Structures (NotificationData, NotificationEvent, PerformanceMetrics, etc.)
+    /// - Constants (TimeConstants, Limits, PoolSizes, Timeouts, etc.)
+    /// </remarks>
+    public partial class NotificationServices
+    {
+        #region Interfaces
     /// <summary>
     /// Public API interface for notification operations
     /// </summary>
@@ -517,4 +519,5 @@ public partial class NotificationServices
     private const bool IS_IOS = false;
 #endif
     #endregion
+}
 }

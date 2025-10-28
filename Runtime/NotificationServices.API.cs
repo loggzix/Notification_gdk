@@ -16,22 +16,24 @@ using UnityEngine.Android;
 #endif
 using UnityEngine;
 
-/// <summary>
-/// Public API for NotificationServices
-/// </summary>
-/// <remarks>
-/// This partial class contains all public methods:
-/// - Fluent Builder API
-/// - Standard API (SendNotification, CancelNotification, etc.)
-/// - Async API
-/// - App Lifecycle methods
-/// - Batch Operations
-/// - Debug helpers
-/// - Extensions
-/// </remarks>
-public partial class NotificationServices
+namespace DSDK.Notifications
 {
-    #region Public API - Fluent Builder
+    /// <summary>
+    /// Public API for NotificationServices
+    /// </summary>
+    /// <remarks>
+    /// This partial class contains all public methods:
+    /// - Fluent Builder API
+    /// - Standard API (SendNotification, CancelNotification, etc.)
+    /// - Async API
+    /// - App Lifecycle methods
+    /// - Batch Operations
+    /// - Debug helpers
+    /// - Extensions
+    /// </remarks>
+    public partial class NotificationServices
+    {
+        #region Public API - Fluent Builder
     /// <summary>
     /// Creates a fluent notification builder for advanced configuration
     /// </summary>
@@ -1169,5 +1171,6 @@ public partial class NotificationServices
 #endif
     }
     #endregion
+}
 }
 

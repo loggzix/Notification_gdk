@@ -9,18 +9,20 @@ using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 
-/// <summary>
-/// Data persistence and I/O for NotificationServices
-/// </summary>
-/// <remarks>
-/// This partial class contains:
-/// - SaveScheduledIds() - Atomic file persistence
-/// - LoadScheduledIds() - Load from atomic file
-/// - ComputeCrc32() - CRC32 computation with lookup table
-/// </remarks>
-public partial class NotificationServices
+namespace DSDK.Notifications
 {
-    #region Persistence - Async Optimized
+    /// <summary>
+    /// Data persistence and I/O for NotificationServices
+    /// </summary>
+    /// <remarks>
+    /// This partial class contains:
+    /// - SaveScheduledIds() - Atomic file persistence
+    /// - LoadScheduledIds() - Load from atomic file
+    /// - ComputeCrc32() - CRC32 computation with lookup table
+    /// </remarks>
+    public partial class NotificationServices
+    {
+        #region Persistence - Async Optimized
     private void MarkDirty()
     {
         Interlocked.Exchange(ref dirtyFlag, 1);
@@ -372,5 +374,6 @@ public partial class NotificationServices
         }
     }
     #endregion
+    }
 }
 

@@ -4,20 +4,22 @@ using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 
-/// <summary>
-/// Main thread dispatcher for NotificationServices
-/// </summary>
-/// <remarks>
-/// This partial class contains:
-/// - ProcessMainThreadActions() - Batch processing with time budget
-/// - RunOnMainThread() - Queue actions for main thread
-/// - TryRunOnMainThread() - Try queue with timeout protection
-/// </remarks>
-public partial class NotificationServices
+namespace DSDK.Notifications
 {
-    #region Main Thread Dispatcher
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void RunOnMainThread(Action action)
+    /// <summary>
+    /// Main thread dispatcher for NotificationServices
+    /// </summary>
+    /// <remarks>
+    /// This partial class contains:
+    /// - ProcessMainThreadActions() - Batch processing with time budget
+    /// - RunOnMainThread() - Queue actions for main thread
+    /// - TryRunOnMainThread() - Try queue with timeout protection
+    /// </remarks>
+    public partial class NotificationServices
+    {
+        #region Main Thread Dispatcher
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal void RunOnMainThread(Action action)
     {
         TryRunOnMainThread(action, dropOldestIfFull: true);
     }
@@ -130,5 +132,6 @@ public partial class NotificationServices
         }
     }
     #endregion
+    }
 }
 

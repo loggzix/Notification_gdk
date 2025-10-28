@@ -4,12 +4,14 @@ using System.Collections;
 using System.Runtime.CompilerServices;
 using Unity.Notifications.iOS;
 
-/// <summary>
-/// iOS-specific notification implementation
-/// </summary>
-public partial class NotificationServices
+namespace DSDK.Notifications
 {
-    #region iOS
+    /// <summary>
+    /// iOS-specific notification implementation
+    /// </summary>
+    public partial class NotificationServices
+    {
+        #region iOS
     // iOS cache fields for performance
     private iOSNotification[] cachedScheduledNotifications;
     private iOSNotification[] cachedDeliveredNotifications;
@@ -239,4 +241,5 @@ public partial class NotificationServices
     #endregion
 }
 #endif
+}
 
