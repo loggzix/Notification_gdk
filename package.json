@@ -3,7 +3,7 @@
     "version": "1.0.0",
     "displayName": "Dmobin - Tool - Notifications",
     "description": "Local notification tool for Android and iOS.",
-    "unity": "2021.3",
+    "unity": "2020.3",
     "keywords": [
       "Notifications",
       "Tools"
