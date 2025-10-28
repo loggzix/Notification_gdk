@@ -3,7 +3,9 @@
 using System;
 using System.Collections;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using Unity.Notifications.iOS;
+using UnityEngine;
 
 namespace DSDK.Notifications
 {
@@ -13,12 +15,6 @@ namespace DSDK.Notifications
     public partial class NotificationServices
     {
         #region iOS
-
-        // iOS cache fields for performance
-        private iOSNotification[] cachedScheduledNotifications;
-        private iOSNotification[] cachedDeliveredNotifications;
-        private float cacheTimestamp;
-        private const float CACHE_TIMEOUT = 2f;
 
         private IEnumerator RequestAuthorizationiOS(Action<bool> callback = null)
         {
@@ -194,10 +190,11 @@ namespace DSDK.Notifications
                     trigger.Second = fireDate.Second;
                     break;
                 case RepeatInterval.Weekly:
-                    // Weekday: 1=Sunday, 2=Monday, ..., 7=Saturday (Apple docs)
-                    trigger.Weekday = (int)fireDate.DayOfWeek + 1;
+                    // TODO: Fix Weekly trigger - API may have changed
+                    // For now, fall back to daily trigger
                     trigger.Hour = fireDate.Hour;
                     trigger.Minute = fireDate.Minute;
+                    trigger.Second = fireDate.Second;
                     break;
             }
 

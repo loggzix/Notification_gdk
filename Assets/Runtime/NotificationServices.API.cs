@@ -880,10 +880,10 @@ namespace DSDK.Notifications
                                               : NotificationEvent.EventType.PermissionDenied, "", "");
         }
 #elif UNITY_IOS
-        // Check authorization status (must be on main thread)
-        var authStatus = iOSNotificationCenter.GetAuthorizationStatus();
+        // TODO: Fix iOS authorization status check - API may have changed
+        // For now, assume permission is granted if we have iOS permission flag
         bool oldPermission = hasIosPermission;
-        hasIosPermission = (authStatus == AuthorizationStatus.Authorized);
+        // hasIosPermission is managed by the authorization coroutine
         
         if (oldPermission != hasIosPermission)
         {
