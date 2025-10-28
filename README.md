@@ -1,0 +1,6 @@
+- Unity->Window->Package Manager
+-  Click "+" left corner
+- Add package from git URL
+- Insert: https://github.com/loggzix/Notification_gdk.git
+- Add
+- Done
