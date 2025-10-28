@@ -26,8 +26,8 @@ public class NotificationServicesDemo : MonoBehaviour
     public Button permissionBtn;
     public Button metricsBtn;
     public Button clearBadgeBtn;
-    public TextMeshProUGUI statusText;
-    public TextMeshProUGUI metricsText;
+    public Text statusText;
+    public Text metricsText;
 
     private int notificationCounter = 0;
 
